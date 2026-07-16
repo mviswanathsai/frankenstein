@@ -1,0 +1,278 @@
+# Session Capability Contract
+
+Date: 2026-07-15
+
+Status: draft zero.
+
+This is a lightweight contract sketch, not a wire protocol or OpenAPI-style
+schema. It names the minimum outside-visible promises a session service must
+make so the rest of an agentic harness can use it without knowing its internals.
+
+The contract should stay small. A service may be much richer than this, but the
+runtime can only assume the base surface below unless the service advertises
+more.
+
+## Purpose
+
+The session capability owns conversation continuity.
+
+It gives the harness a stable place to create, resume, mutate, and
+delete agent sessions. It also exposes the active continuation state the runtime
+needs to keep working from the intended prior state.
+
+## Owned State
+
+A session service owns:
+
+- session identity
+- lifecycle state
+- ordered transcript or ordered session record
+- active continuation state
+- session metadata needed by user surfaces
+- model-facing session tools, if the service offers any
+
+The service may store this state however it wants. The contract does not require
+a database, event log, flat transcript file, provider thread, or branch tree.
+
+## Command Model
+
+All commands use the project-level envelope shape:
+
+```text
+CommandEnvelope = action + metadata + payload + causality refs
+```
+
+Commands are requests. Events are recorded outcomes.
+
+A successful direct call may return the terminal event synchronously, but the
+terminal event is the canonical output.
+
+## Required Actions
+
+### `session.create`
+
+Start a new session from an initial user prompt.
+
+Base input payload:
+
+```json
+{
+  "prompt": "user prompt text"
+}
+```
+
+The prompt is required and becomes the first ordered user message in the
+session. The terminal event should identify the new session, its initial
+lifecycle state, and the initial record. A service may accept optional metadata
+or richer creation payloads, but the base runtime should not create an empty
+interactive session.
+
+Terminal events:
+
+- `session.created`
+- `session.create_rejected`
+
+### `session.resume`
+
+Attach the current runtime to an existing session.
+
+This is the action used when a CLI resumes a session, a UI opens a prior
+conversation, or a gateway resolves an incoming message to an existing session.
+
+Terminal events:
+
+- `session.resumed`
+- `session.resume_rejected`
+
+### `session.mutate`
+
+Apply a coherent mutation to the session.
+
+This covers appending turn records, updating metadata, replacing active
+continuation state after another capability has produced it, or any other
+session-state change the selected implementation accepts.
+
+The contract does not prescribe the internal mutation representation. It does
+require that the service either records the mutation coherently or rejects it
+explicitly.
+
+Terminal events:
+
+- `session.mutated`
+- `session.mutation_rejected`
+
+### `session.read`
+
+Return the full transcript or ordered session record visible to the caller.
+
+This is the canonical user-facing/session-facing history read. Implementations
+may redact or filter for policy reasons, but redaction must be explicit in the
+result.
+
+Terminal events:
+
+- `session.read_completed`
+- `session.read_rejected`
+
+### `session.materialize`
+
+Return the current continuation state needed by the runtime.
+
+This may be the full transcript, a compacted active state, a provider-native
+thread reference plus metadata, or another implementation-specific continuation
+object. The important promise is that the runtime can continue from it without
+guessing what the session service meant.
+
+Terminal events:
+
+- `session.materialized`
+- `session.materialization_rejected`
+
+### `session.delete`
+
+Delete a session when policy allows it.
+
+Deletion may be unsupported, denied, soft, or hard depending on the
+implementation and deployment policy. The result must say what happened.
+
+Terminal events:
+
+- `session.deleted`
+- `session.delete_rejected`
+
+## Service Advertisement
+
+At registration or initialization, the service must advertise  model-facing session tools, if any
+
+## Unsupported Requests
+
+If a caller asks for an action the service does not support, the outcome should
+be recorded as an explicit unsupported result, not as an unknown exception.
+
+Example:
+
+```text
+command: session.branch
+terminal event: capability.unsupported
+```
+
+This lets UIs, model-facing tools, memory, compaction, and experiments request
+richer behavior without hardcoding service-specific APIs.
+
+## Invariants
+
+- A created or resumed session has a stable session identity until it is
+  deleted or the service explicitly reports otherwise.
+- Mutations are ordered by the session service.
+- A successful mutation has a new observable session state.
+- A rejected mutation must not pretend to have changed session state.
+- `session.read` returns the service's canonical ordered record for the caller.
+- `session.materialize` returns continuation state derived from a known session
+  state.
+- Failed resume must not silently create accidental continuity.
+- Failed compaction application, via `session.mutate`, must not silently drop
+  usable session state.
+- Model-facing tools published by the session service are part of its advertised
+  surface and should route back through the mediator.
+
+## Failure Semantics
+
+Expected failure categories:
+
+- missing create prompt
+- session not found
+- invalid session reference
+- invalid mutation
+- persistence unavailable
+- read unavailable
+- materialization unavailable
+- delete denied
+- action unsupported
+- policy denied
+
+The exact error payload can evolve. The required behavior is that failures are
+typed enough for the runtime or surface to decide whether to retry, degrade,
+ask the user, or stop.
+
+## Compaction Interaction
+
+Compaction is not part of the session capability.
+
+A typical flow is:
+
+```text
+runtime -> session.read or session.materialize
+runtime -> compaction.compact
+runtime -> session.mutate
+```
+
+The compaction service owns the transform strategy. The session service owns the
+record of whatever continuation state is accepted back into the session.
+
+## Memory Interaction
+
+Memory services should not need to know the concrete session implementation.
+
+The runtime or mediator should pass session observations deliberately:
+
+- session created
+- turn/session mutated
+- transcript or ordered record read, when allowed
+- session deleted
+
+If a memory service wants full transcript access, it should request
+`session.read` through the mediator. If the session service rejects or does not
+support the needed read shape, memory can degrade or fail according to its own
+contract.
+
+## Lifecycle
+
+The base lifecycle is intentionally simple:
+
+```text
+created -> active/resumable -> mutated many times -> deleted
+```
+
+An implementation may have richer internal states such as archived, branched,
+forked, compacted, expired, locked, or collaborative. Those are implementation
+philosophy unless advertised as part of a richer surface.
+
+## Concurrency And Idempotency
+
+The mediator should provide command IDs, causality refs, and idempotency keys.
+
+The base session mutation payload does not include an expected-version guard.
+The session service should still apply each accepted mutation atomically and
+preserve the ordered session record. Stronger compare-and-swap behavior can be
+advertised by a richer service surface if a harness actually uses it.
+
+## Persistence Expectations
+
+The contract does not require every service to be durable forever.
+
+It does require the service to advertise its persistence mode clearly. A service
+that cannot resume after process exit should say so. A user-facing durable
+session service should make failed persistence visible rather than letting the
+harness pretend continuity is safe.
+
+## Security And Policy
+
+The service may deny read, mutate, resume, or delete based on caller, surface,
+workspace, policy, or deployment mode.
+
+Policy denial is a valid terminal result. It should be distinguishable from
+"not found" and "unsupported".
+
+## Minimal Test Fixtures
+
+A service implementing the base session contract should be testable with:
+
+- create a session from a user prompt and receive a stable session identity
+- mutate with one user turn and one assistant turn
+- read the ordered record back
+- materialize continuation state from that record
+- resume the session by reference
+- reject resume for a missing session
+- reject or apply delete according to policy
+- reject an unsupported richer action such as `session.branch`
+- avoid double-applying the same idempotent mutation
