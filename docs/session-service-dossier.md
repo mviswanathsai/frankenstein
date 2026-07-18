@@ -35,20 +35,20 @@ metadata needed by surfaces.
 
 State owned or mutated:
 Session identity, lifecycle status, active continuation state, ordered
-conversation records or events, session metadata for surfaces, and any
-model-facing tool metadata the session service chooses to publish.
+conversation records or events, optional session metadata such as `cwd`, and
+any model-facing tool metadata the session service chooses to publish.
 
 Inputs:
 Session lifecycle commands, the initial user prompt for session creation,
 existing session references, user/assistant/tool turn records, metadata updates,
-transcript read requests, deletion requests, and implementation-specific data
-needed to materialize continuation state.
+pre-resolved record refs, transcript read requests, deletion requests, and
+implementation-specific data needed to materialize continuation state.
 
 Outputs:
 Created or resumed session identity, updated session state, materialized active
-continuation state, full transcript or ordered record, session metadata,
-advertised tool schemas if any, and clear failure results when a session
-operation cannot be performed.
+continuation state, full transcript or ordered record with preserved `turn_id`
+and `refs` fields when supplied, session metadata, advertised tool schemas if
+any, and clear failure results when a session operation cannot be performed.
 
 Side effects:
 Persist or update session state in the implementation's chosen storage and
@@ -73,6 +73,29 @@ Session state is the bridge between turns. It affects runtime continuation,
 context construction, memory observations, UI/gateway presentation,
 observability, and long-session behavior. The boundary should be small, but it
 cannot be treated as passive storage.
+
+Record surface:
+The base session service should not prescribe a full transcript schema, but it
+should preserve useful top-level record annotations supplied by the runtime or
+surface:
+
+- `turn_id`, for grouping user, assistant, and tool records that belong to the
+  same logical turn
+- `refs`, for pre-resolved file, URL, artifact, memory, or message references
+  associated with a record
+
+The session service stores these annotations as part of transcript truth. It
+does not have to parse raw text into refs or resolve referenced content.
+
+Session metadata may include optional `cwd` when the runtime or surface has a
+meaningful working directory. `cwd` should not be mandatory because gateway,
+remote-backend, cron, browser, imported, and eval sessions may not have one.
+
+The base record surface should not add `touched_paths` yet. Tool-derived path
+evidence is useful, especially inside a still-running agentic loop, but it can
+remain runtime-local or context-provider request metadata until implementation
+experience shows that it deserves canonical session persistence. Explicit
+user-facing path references should flow through `refs`.
 
 Possible alternate philosophies:
 Ephemeral sessions, flat append-only transcripts, immutable event logs,
@@ -101,6 +124,8 @@ At this stage, the base session surface should stay conceptual:
 - materialize the current continuation state needed by the runtime
 - delete a session when policy allows it
 - advertise model-facing session tools, if any
+- preserve supplied record-level `turn_id` and `refs`
+- preserve optional session metadata such as `cwd`
 
 Everything beyond the minimum surface is implementation philosophy. A service
 may support search, branching, forking, rewind, transcript windows,
