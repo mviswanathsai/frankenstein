@@ -2,6 +2,8 @@
 
 Date: 2026-07-15
 
+Contract version: `session.v0.1`.
+
 Status: draft.
 
 Contract draft: `docs/session-capability-contract.md`.

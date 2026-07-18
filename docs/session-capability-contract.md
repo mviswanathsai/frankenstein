@@ -2,7 +2,9 @@
 
 Date: 2026-07-15
 
-Status: draft zero.
+Contract version: `session.v0.1`.
+
+Status: draft.
 
 This is a lightweight contract sketch, not a wire protocol or OpenAPI-style
 schema. It names the minimum outside-visible promises a session service must
@@ -79,7 +81,7 @@ addressable material.
 Sketch:
 
 ```text
-SessionRef {
+ContextRef {
   kind                  // file | url | artifact | memory | message | ...
   target
   label?
@@ -124,16 +126,20 @@ Base input payload:
 {
   "prompt": "user prompt text",
   "turn_id": "optional runtime-generated turn id",
-  "refs": []
+  "refs": [],
+  "metadata": {
+    "cwd": "optional working directory"
+  }
 }
 ```
 
 The prompt is required and becomes the first ordered user message in the
 session. Optional `turn_id` and `refs` annotate that first user record when
-present. The terminal event should identify the new session, its initial
-lifecycle state, metadata, and the initial record. A service may accept optional
-metadata or richer creation payloads, but the base runtime should not create an
-empty interactive session.
+present. Optional `metadata.cwd` records the session working directory when the
+runtime or surface has one. The terminal event should identify the new session,
+its initial lifecycle state, metadata, and the initial record. A service may
+accept optional metadata or richer creation payloads, but the base runtime
+should not create an empty interactive session.
 
 Terminal events:
 
@@ -214,7 +220,9 @@ Terminal events:
 ## Service Advertisement
 
 At registration or initialization, the service must advertise model-facing
-session tools, if any.
+session tools, if any. It should also report the session contract version it
+implements, such as `session.v0.1`, so the mediator can reject or adapt
+incompatible services explicitly.
 
 ## Unsupported Requests
 
