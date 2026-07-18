@@ -37,8 +37,9 @@ metadata needed by surfaces.
 
 State owned or mutated:
 Session identity, lifecycle status, active continuation state, ordered
-conversation records or events, optional session metadata such as `cwd`, and
-any model-facing tool metadata the session service chooses to publish.
+conversation records or events, optional session metadata such as `title`,
+`display_name`, `cwd`, `model_provider`, `model`, and `custom`, and any
+model-facing tool metadata the session service chooses to publish.
 
 Inputs:
 Session lifecycle commands, the initial user prompt for session creation,
@@ -89,9 +90,9 @@ surface:
 The session service stores these annotations as part of transcript truth. It
 does not have to parse raw text into refs or resolve referenced content.
 
-Session metadata may include optional `cwd` when the runtime or surface has a
-meaningful working directory. `cwd` should not be mandatory because gateway,
-remote-backend, cron, browser, imported, and eval sessions may not have one.
+Session metadata may include optional labels, `cwd`, model identity, and custom
+extension data. `cwd` should not be mandatory because gateway, remote-backend,
+cron, browser, imported, and eval sessions may not have one.
 
 The base record surface should not add `touched_paths` yet. Tool-derived path
 evidence is useful, especially inside a still-running agentic loop, but it can
@@ -127,7 +128,8 @@ At this stage, the base session surface should stay conceptual:
 - delete a session when policy allows it
 - advertise model-facing session tools, if any
 - preserve supplied record-level `turn_id` and `refs`
-- preserve optional session metadata such as `cwd`
+- preserve optional session metadata such as `title`, `display_name`, `cwd`,
+  `model_provider`, `model`, and `custom`
 
 Everything beyond the minimum surface is implementation philosophy. A service
 may support search, branching, forking, rewind, transcript windows,

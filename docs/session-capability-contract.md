@@ -1,6 +1,6 @@
 # Session Capability Contract
 
-Date: 2026-07-15
+Date: 2026-07-18
 
 Contract version: `session.v0.1`.
 
@@ -10,6 +10,10 @@ This is a lightweight contract sketch, not a wire protocol or OpenAPI-style
 schema. It names the minimum outside-visible promises a session service must
 make so the rest of an agentic harness can use it without knowing its internals.
 
+This version is verified against the `internal/session` implementation. The Go
+implementation is a concrete service; this document is the capability shape the
+rest of the harness should be able to rely on.
+
 The contract should stay small. A service may be much richer than this, but the
 runtime can only assume the base surface below unless the service advertises
 more.
@@ -18,9 +22,14 @@ more.
 
 The session capability owns conversation continuity.
 
-It gives the harness a stable place to create, resume, mutate, and
-delete agent sessions. It also exposes the active continuation state the runtime
-needs to keep working from the intended prior state.
+It gives the harness a stable place to create, resume, mutate, inspect,
+materialize, and delete agent sessions. It also exposes the active continuation
+state the runtime needs to keep working from the intended prior state.
+
+Session storage and context materialization are related but not identical.
+`session.read` returns the canonical ordered session record visible to the
+caller. `session.materialize` returns the continuation state the runtime should
+use for the next turn.
 
 ## Owned State
 
@@ -28,46 +37,163 @@ A session service owns:
 
 - session identity
 - lifecycle state
+- monotonically increasing session version
+- created, updated, and deleted timestamps
 - ordered transcript or ordered session record
 - active continuation state
-- session metadata needed by user surfaces, including optional `cwd` when known
+- usage/accounting state associated with the session
+- optional idempotency records needed to prevent duplicate mutation application
+- session metadata needed by user surfaces, including optional labels, `cwd`,
+  model identity, and custom extension data
 - model-facing session tools, if the service offers any
 
 The service may store this state however it wants. The contract does not require
 a database, event log, flat transcript file, provider thread, or branch tree.
 
-## Session Metadata
+## Session Object
 
-The base metadata surface should stay sparse.
+Successful `session.create`, `session.resume`, `session.mutate`,
+`session.read`, and `session.delete` return a session object as their terminal
+payload.
 
 ```text
-SessionMetadata {
-  cwd?
+Session {
+  id
+  version
+  state
+  created_at
+  updated_at
+  deleted_at?
+  metadata
+  usage
+  records[]
 }
 ```
 
-`cwd` is optional. It records the working directory associated with the session
-when the runtime or surface has a meaningful one. Local CLI sessions often do;
-gateway, cron, browser, remote-backend, or imported sessions may not. A missing
-`cwd` must not make a session invalid.
+`id` is stable for the life of the session.
+
+`version` starts at `1` on creation and increases when accepted mutations change
+session state. A read or resume must not change the version. A delete that
+changes an active session to deleted is a state change and should advance the
+version. Repeating delete against an already-deleted session may return the
+current deleted session without another state change.
+
+`state` is the lifecycle state visible to the caller. The base lifecycle states
+are:
+
+```text
+active
+deleted
+```
+
+An implementation may have richer internal states such as archived, branched,
+forked, compacted, expired, locked, or collaborative. Those are implementation
+philosophy unless advertised as part of a richer surface.
+
+`created_at`, `updated_at`, and `deleted_at` are service-owned timestamps.
+`deleted_at` is present only after deletion.
+
+## Session Metadata
+
+The base metadata surface is optional and surface-oriented. It is not context
+by itself; it is information the session service stores for resume, display,
+routing, and diagnostics.
+
+```text
+SessionMetadata {
+  title?: string
+  display_name?: string
+  cwd?: string
+  model_provider?: string
+  model?: string
+  custom?: map<string, json>
+}
+```
+
+`title` and `display_name` are user/surface-facing labels. They are optional.
+
+`cwd` records the working directory associated with the session when the runtime
+or surface has a meaningful one. Local CLI sessions often do; gateway, cron,
+browser, remote-backend, imported, or eval sessions may not. A missing `cwd`
+must not make a session invalid.
+
+`model_provider` and `model` record the model identity associated with the
+session when known. They are metadata for inspection, resume, and diagnostics;
+they do not make the session service a model adapter.
+
+`custom` is an implementation-extension map for metadata that should be
+preserved by the session service but is not part of the base shared vocabulary.
+
+The base mutation model treats `set_metadata` as replacement of the metadata
+object supplied by the caller, not a field-level merge, unless a richer service
+surface advertises merge semantics.
+
+## Usage Surface
+
+The session capability preserves usage state because session continuity includes
+the runtime-visible accounting needed for diagnostics, continuation decisions,
+context pressure, and user surfaces.
+
+```text
+SessionUsage {
+  char_count
+  last_prompt_tokens
+  last_output_tokens
+  total_input_tokens
+  total_output_tokens
+  total_reasoning_tokens
+  cache_read_tokens
+  cache_write_tokens
+  context_window_tokens
+  last_context_used_pct
+  api_call_count
+}
+
+TokenCount {
+  value
+  source
+}
+
+TokenCountSource = char_estimate | tokenizer | provider
+```
+
+Unknown numeric usage values may be zero. Token counts should identify their
+source so a runtime or surface can distinguish rough estimates from tokenizer
+or provider-supplied values.
+
+Appending records may update usage best-effort. A model adapter or runtime may
+later replace the usage object through `session.mutate` with provider-verified
+usage.
 
 ## Session Record Surface
 
 The base contract does not prescribe an internal transcript format, but ordered
 records returned by `session.read` or embedded in a materialized continuation
-should preserve these top-level fields when the runtime supplies them:
+must expose these top-level fields:
 
 ```text
 SessionRecord {
-  record_id?
+  id
+  seq
   turn_id?
-  role
-  content?
-  parts?
   refs?
-  metadata?
+  kind
+  role?
+  text?
+  raw?
+  created_at
+  char_count
+  tokens
 }
 ```
+
+`id` is a stable record identity. The service may assign it when the caller does
+not provide one, and may reject a caller-supplied ID that would collide within
+the session.
+
+`seq` is the canonical order within the session. The service may assign or
+normalize it when needed. `session.read` must return records in canonical
+session order, not insertion order or timestamp order.
 
 `turn_id` groups records that belong to the same logical user turn. It may be
 generated by the runtime/mediator rather than by the session service, but once
@@ -82,11 +208,17 @@ Sketch:
 
 ```text
 ContextRef {
-  kind                  // file | url | artifact | memory | message | ...
+  kind
   target
   label?
   range?
   metadata?
+}
+
+ContextRefRange {
+  unit?
+  start?
+  end?
 }
 ```
 
@@ -94,6 +226,31 @@ The session service stores and returns refs; it does not have to parse raw text,
 read files, fetch URLs, or decide how refs become model context. Frontends,
 gateways, runtimes, or specialized providers may create refs before passing
 records to the session service.
+
+`kind` identifies the record category. The base record kinds are:
+
+```text
+message
+tool_call
+tool_result
+system_note
+```
+
+If omitted in an append operation, a service may default `kind` to `message`.
+
+`role` is the conversation role when the record represents a model-facing or
+user-facing message. Creation from a user prompt must create an initial
+`message` record with role `user`.
+
+`text` is the base textual content field.
+
+`raw` is opaque JSON for provider-native, tool-native, or richer record payloads
+that should be preserved by the session service but are not part of the base
+shared vocabulary.
+
+`char_count` and `tokens` are service-visible accounting for the record. If the
+caller does not provide token accounting, a service may populate an estimate and
+mark its source as `char_estimate`.
 
 The base record surface intentionally does not include a first-class
 `touched_paths` field. Tool-derived path evidence can remain runtime-local or
@@ -111,8 +268,9 @@ CommandEnvelope = action + metadata + payload + causality refs
 
 Commands are requests. Events are recorded outcomes.
 
-A successful direct call may return the terminal event synchronously, but the
-terminal event is the canonical output.
+A successful direct call may return the terminal event payload synchronously,
+but the terminal event is the canonical output once the mediator/event log
+exists.
 
 ## Required Actions
 
@@ -128,18 +286,32 @@ Base input payload:
   "turn_id": "optional runtime-generated turn id",
   "refs": [],
   "metadata": {
-    "cwd": "optional working directory"
+    "title": "optional title",
+    "display_name": "optional display label",
+    "cwd": "optional working directory",
+    "model_provider": "optional provider id",
+    "model": "optional model id",
+    "custom": {}
   }
 }
 ```
 
-The prompt is required and becomes the first ordered user message in the
-session. Optional `turn_id` and `refs` annotate that first user record when
-present. Optional `metadata.cwd` records the session working directory when the
-runtime or surface has one. The terminal event should identify the new session,
-its initial lifecycle state, metadata, and the initial record. A service may
-accept optional metadata or richer creation payloads, but the base runtime
-should not create an empty interactive session.
+The prompt is required after trimming whitespace. The base runtime should not
+create an empty interactive session.
+
+The accepted prompt becomes the first ordered user message in the session.
+Creation returns a session with:
+
+- stable session `id`
+- `version` of `1`
+- `state` of `active`
+- `created_at` and `updated_at`
+- supplied metadata
+- initial usage/accounting state
+- exactly one initial record with `seq` of `1`, `kind` of `message`, `role` of
+  `user`, and `text` equal to the prompt
+
+Optional `turn_id` and `refs` annotate that first user record when present.
 
 Terminal events:
 
@@ -148,10 +320,24 @@ Terminal events:
 
 ### `session.resume`
 
-Attach the current runtime to an existing session.
+Attach the current runtime to an existing active session.
+
+Base input payload:
+
+```json
+{
+  "id": "session id"
+}
+```
 
 This is the action used when a CLI resumes a session, a UI opens a prior
 conversation, or a gateway resolves an incoming message to an existing session.
+
+Resume returns the current session object. It must not mutate the session,
+change `updated_at`, or create accidental continuity when the session is
+missing.
+
+Deleted sessions are not resumable in the base contract.
 
 Terminal events:
 
@@ -160,18 +346,62 @@ Terminal events:
 
 ### `session.mutate`
 
-Apply a coherent mutation to the session.
+Apply a coherent mutation to an active session.
 
-This covers appending turn records, updating metadata, replacing active
-continuation state after another capability has produced it, or any other
-session-state change the selected implementation accepts.
+Base input payload:
 
-The contract does not prescribe the internal mutation representation. It does
-require that the service either records the mutation coherently or rejects it
-explicitly.
+```json
+{
+  "id": "session id",
+  "idempotency_key": "optional duplicate-protection key",
+  "ops": [
+    {
+      "type": "append_record",
+      "record": {}
+    },
+    {
+      "type": "set_metadata",
+      "metadata": {}
+    },
+    {
+      "type": "set_usage",
+      "usage": {}
+    }
+  ]
+}
+```
 
-For mutations that append records, the service should preserve top-level
-`turn_id` and `refs` fields when present.
+`id` is required. `ops` must be non-empty.
+
+The base mutation operations are:
+
+- `append_record`: append one record to the ordered session record.
+- `set_metadata`: replace the session metadata object.
+- `set_usage`: replace the session usage object.
+
+Each operation must include the payload required by its type. Unknown operation
+types are invalid mutations unless a richer advertised surface adds them.
+
+The service must either apply the mutation coherently or reject it explicitly.
+For a non-idempotent accepted mutation, the service advances the session
+version once for the whole mutation, updates `updated_at`, and returns the
+updated session object.
+
+For appended records, the service assigns any missing base fields it owns, such
+as `id`, `seq`, `kind`, `created_at`, `char_count`, and estimated `tokens`.
+Accepted record mutations preserve supplied top-level `turn_id` and `refs`
+unless the service explicitly rejects or redacts them.
+
+If `idempotency_key` is supplied, the service must prevent the same mutation
+from being applied twice to the same session. A repeat request may return the
+current session state rather than replaying the exact historical direct-call
+return, unless the service advertises stronger event replay semantics.
+
+The base mutation payload does not include an expected-version guard. Stronger
+compare-and-swap behavior can be advertised by a richer service surface if a
+harness actually uses it.
+
+Deleted sessions cannot be mutated in the base contract.
 
 Terminal events:
 
@@ -180,11 +410,25 @@ Terminal events:
 
 ### `session.read`
 
-Return the full transcript or ordered session record visible to the caller.
+Return the canonical ordered session record visible to the caller.
+
+Base input payload:
+
+```json
+{
+  "id": "session id"
+}
+```
 
 This is the canonical user-facing/session-facing history read. Implementations
 may redact or filter for policy reasons, but redaction must be explicit in the
 result.
+
+Read returns a session object and must not mutate session state. Records must be
+returned in canonical `seq` order.
+
+Deleted sessions are not readable in the base contract unless a richer service
+surface advertises tombstone or audit reads explicitly.
 
 Terminal events:
 
@@ -195,10 +439,39 @@ Terminal events:
 
 Return the current continuation state needed by the runtime.
 
-This may be the full transcript, a compacted active state, a provider-native
-thread reference plus metadata, or another implementation-specific continuation
-object. The important promise is that the runtime can continue from it without
-guessing what the session service meant.
+Base input payload:
+
+```json
+{
+  "id": "session id"
+}
+```
+
+Base terminal payload:
+
+```text
+MaterializedSession {
+  session_id
+  version
+  state
+  kind
+  metadata
+  usage
+  records[]
+}
+
+ContinuationKind = ordered_records
+```
+
+For `session.v0.1`, a base service must support `ordered_records`
+materialization. Richer services may advertise additional continuation kinds,
+such as a compacted state or provider-native thread reference, but the `kind`
+field must make that explicit so the runtime does not guess.
+
+Materialization returns continuation state derived from a known active session
+version. It must not mutate session state.
+
+Deleted sessions cannot be materialized in the base contract.
 
 Terminal events:
 
@@ -209,8 +482,24 @@ Terminal events:
 
 Delete a session when policy allows it.
 
+Base input payload:
+
+```json
+{
+  "id": "session id"
+}
+```
+
 Deletion may be unsupported, denied, soft, or hard depending on the
 implementation and deployment policy. The result must say what happened.
+
+For the base soft-delete behavior, an accepted delete changes an active session
+to `deleted`, sets `deleted_at`, advances the session version, updates
+`updated_at`, and returns the deleted session object. After deletion, resume,
+read, materialize, and mutate reject the session as deleted.
+
+Deleting an already-deleted session may return the current deleted session
+without another state change.
 
 Terminal events:
 
@@ -219,10 +508,22 @@ Terminal events:
 
 ## Service Advertisement
 
-At registration or initialization, the service must advertise model-facing
-session tools, if any. It should also report the session contract version it
-implements, such as `session.v0.1`, so the mediator can reject or adapt
-incompatible services explicitly.
+At registration or initialization, the service must advertise the session
+contract version it implements, such as `session.v0.1`, so the mediator can
+reject or adapt incompatible services explicitly.
+
+It must also advertise model-facing session tools, if any. A service with no
+model-facing session tools should make that absence explicit through its normal
+registration metadata once tool advertisement exists.
+
+The reference `internal/session` package exposes:
+
+```text
+ContractInfo {
+  capability: session
+  contract_version: session.v0.1
+}
+```
 
 ## Unsupported Requests
 
@@ -241,18 +542,26 @@ richer behavior without hardcoding service-specific APIs.
 
 ## Invariants
 
-- A created or resumed session has a stable session identity until it is
-  deleted or the service explicitly reports otherwise.
-- Mutations are ordered by the session service.
-- A successful mutation has a new observable session state.
+- A created or resumed session has a stable session identity until deletion or
+  until the service explicitly reports otherwise.
+- Creation from a prompt creates exactly one initial user message record.
+- A created session starts active with version `1`.
+- Session versions are monotonic for accepted state changes.
+- Resume, read, and materialize must not mutate session state.
+- Mutations are applied atomically and ordered by the session service.
+- A successful non-idempotent mutation has a new observable session version.
 - A rejected mutation must not pretend to have changed session state.
+- Repeating an idempotent mutation must not append duplicate records or apply
+  duplicate state changes.
 - `session.read` returns the service's canonical ordered record for the caller.
 - `session.materialize` returns continuation state derived from a known session
-  state.
+  version.
 - Accepted record mutations preserve supplied top-level `turn_id` and `refs`
   unless the service explicitly rejects or redacts them.
 - Missing `cwd` metadata is valid.
 - Failed resume must not silently create accidental continuity.
+- Deleted sessions are not resumable, readable, materializable, or mutable in
+  the base contract.
 - Failed compaction application, via `session.mutate`, must not silently drop
   usable session state.
 - Model-facing tools published by the session service are part of its advertised
@@ -262,9 +571,11 @@ richer behavior without hardcoding service-specific APIs.
 
 Expected failure categories:
 
+- invalid session input
 - missing create prompt
+- invalid or missing session reference
 - session not found
-- invalid session reference
+- session deleted
 - invalid mutation
 - persistence unavailable
 - read unavailable
@@ -276,6 +587,16 @@ Expected failure categories:
 The exact error payload can evolve. The required behavior is that failures are
 typed enough for the runtime or surface to decide whether to retry, degrade,
 ask the user, or stop.
+
+For the current reference behavior:
+
+- empty or whitespace-only create prompts fail as invalid input
+- missing IDs fail as invalid input
+- missing sessions fail as not found
+- deleted sessions fail as deleted for resume, read, materialize, and mutate
+- empty mutation op lists fail as invalid mutation
+- mutation ops without their required payload fail as invalid mutation
+- unknown mutation op types fail as invalid mutation
 
 ## Compaction Interaction
 
@@ -316,18 +637,23 @@ The base lifecycle is intentionally simple:
 created -> active/resumable -> mutated many times -> deleted
 ```
 
-An implementation may have richer internal states such as archived, branched,
-forked, compacted, expired, locked, or collaborative. Those are implementation
-philosophy unless advertised as part of a richer surface.
+Deletion is terminal for resume/read/materialize/mutate in the base surface.
+Richer services may offer restore, audit read, branch, fork, archive, or
+expiration semantics by advertising additional actions and states.
 
 ## Concurrency And Idempotency
 
 The mediator should provide command IDs, causality refs, and idempotency keys.
+For direct-call implementations, the session mutation payload may also carry an
+`idempotency_key`.
 
 The base session mutation payload does not include an expected-version guard.
 The session service should still apply each accepted mutation atomically and
 preserve the ordered session record. Stronger compare-and-swap behavior can be
 advertised by a richer service surface if a harness actually uses it.
+
+Idempotency is scoped to a session. It prevents duplicate application of the
+same accepted mutation, especially duplicate record appends after retry.
 
 ## Persistence Expectations
 
@@ -338,26 +664,41 @@ that cannot resume after process exit should say so. A user-facing durable
 session service should make failed persistence visible rather than letting the
 harness pretend continuity is safe.
 
+Persistence is implementation-owned. The reference service uses SQLite, but the
+contract does not require SQLite or any particular storage layout.
+
 ## Security And Policy
 
 The service may deny read, mutate, resume, or delete based on caller, surface,
 workspace, policy, or deployment mode.
 
 Policy denial is a valid terminal result. It should be distinguishable from
-"not found" and "unsupported".
+"not found", "deleted", and "unsupported".
 
 ## Minimal Test Fixtures
 
 A service implementing the base session contract should be testable with:
 
-- create a session from a user prompt and receive a stable session identity
-- create or mutate with optional `metadata.cwd`
+- advertise `session.v0.1`
+- create a session from a user prompt and receive a stable session identity,
+  version `1`, active state, and one initial user message record
+- reject an empty or whitespace-only creation prompt
+- create or mutate with optional metadata fields such as `title`,
+  `display_name`, `cwd`, `model_provider`, `model`, and `custom`
 - mutate with one user turn and one assistant turn sharing a `turn_id`
 - mutate with a record that has top-level `refs`
 - read the ordered record back with supplied `turn_id` and `refs` preserved
-- materialize continuation state from that record
-- resume the session by reference
-- reject resume for a missing session
-- reject or apply delete according to policy
-- reject an unsupported richer action such as `session.branch`
+- return read records in canonical sequence order
+- materialize continuation state with kind `ordered_records`
+- resume the session by reference without mutating it
+- reject resume, read, and materialize for a missing session
+- reject invalid mutations, including missing ops and missing required op
+  payloads
+- append a record and update record/session usage accounting with an identified
+  token source
+- replace usage with provider/tokenizer-supplied accounting through
+  `set_usage`
 - avoid double-applying the same idempotent mutation
+- delete a session and make it unresumable, unreadable, unmaterializable, and
+  immutable through the base surface
+- reject an unsupported richer action such as `session.branch`
