@@ -2,6 +2,8 @@
 
 Date: 2026-07-18
 
+Contract version: `context_provider.v0`.
+
 Status: draft.
 
 This document replaces the earlier single-action context-provider dossier with a
