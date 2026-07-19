@@ -6,6 +6,8 @@ Contract version: `context_provider.v0`.
 
 Status: draft.
 
+Contract draft: `docs/context-provider-capability-contract.md`.
+
 This document replaces the earlier single-action context-provider dossier with a
 contract-shaped draft. It is still not a final API specification. The goal is to
 capture the boundary decisions from the Hermes census and the design discussion
@@ -23,6 +25,9 @@ not become a swarm of tiny providers such as `DateProvider`, `CwdProvider`,
 or runtime already knows can travel in the context request. Evidence, file refs,
 identity, user facts, skills, and project instructions are candidate roles or
 slots, not mandatory service boundaries.
+
+Note: an even simpler, future abstraction could be a "ranking" middleware for
+context candidates that decides what is stable vs per-turn.
 
 ## Capability
 
@@ -313,7 +318,6 @@ Well-known slots:
 
 - `identity`
 - `user_profile`
-- `user_preferences`
 - `project_instructions`
 - `workspace_state`
 - `session_fact`
@@ -322,10 +326,6 @@ Well-known slots:
 - `referenced_material`
 - `file_reference`
 - `tool_guidance`
-- `capability_guidance`
-- `warning`
-- `conflict`
-- `uncertainty`
 
 The same slot may appear in either layer:
 
@@ -368,37 +368,19 @@ ContextCandidate {
   slot_description?
 
   content?                      // normalized material the builder may render
-  rendered_text?                // source/provider-owned text to preserve if accepted
   refs?                         // dereferenceable file/url/memory/artifact refs
 
   source_kind                   // file | url | memory | transcript | tool | runtime | ...
-  selection_reason              // startup_snapshot | semantic_recall | explicit_reference | path_trigger | ...
   trigger                       // echoed/refined request trigger
-  scope?
-  authority?
-  confidence?
 
   provenance
-  invalidation_keys?
   warnings?
 }
 ```
 
-`content` is normalized material the builder may render.
-`rendered_text` is source-owned text that should be preserved if accepted.
+`content` is source-owned text that should be preserved if accepted.
 `refs` point to files, URLs, memory records, artifacts, or other dereferenceable
 sources. A provider may return any combination when the combination is useful.
-
-Examples of `selection_reason`:
-
-- `startup_snapshot`
-- `semantic_recall`
-- `explicit_reference`
-- `path_trigger`
-- `session_resume`
-- `scope_change`
-- `tool_result_followup`
-- `provider_policy`
 
 ## Provenance
 
@@ -420,35 +402,6 @@ File-derived provenance should include, when available:
 This lets the builder choose inline placement, separate context placement,
 reference-only placement, or omission while still recording what the candidate
 came from.
-
-## Scope
-
-Scope is distinct from layer.
-
-Examples:
-
-```text
-global
-user
-project
-workspace_root
-workspace_subtree(path="backend/")
-session
-turn
-model_call
-artifact(ref="...")
-```
-
-A candidate may be stable but scoped:
-
-```text
-stable.project_instructions
-scope = workspace_subtree("backend/")
-source = "backend/AGENTS.md"
-```
-
-The builder owns whether a scoped stable candidate is active for a given model
-call. Providers should supply enough scope metadata for that decision.
 
 ## Memory Interaction
 
