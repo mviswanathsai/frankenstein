@@ -61,9 +61,11 @@ CREATE TABLE IF NOT EXISTS session_records (
 	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 	seq INTEGER NOT NULL,
 	id TEXT NOT NULL,
+	turn_id TEXT,
 	kind TEXT NOT NULL,
 	role TEXT,
 	text TEXT,
+	refs_json TEXT,
 	raw_json TEXT,
 	created_at TEXT NOT NULL,
 	char_count INTEGER NOT NULL,
@@ -81,7 +83,56 @@ CREATE TABLE IF NOT EXISTS session_mutation_results (
 	PRIMARY KEY (session_id, idempotency_key)
 );
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.ensureSessionRecordColumns(ctx)
+}
+
+func (s *Store) ensureSessionRecordColumns(ctx context.Context) error {
+	columns, err := s.sessionRecordColumns(ctx)
+	if err != nil {
+		return err
+	}
+	migrations := []struct {
+		name string
+		sql  string
+	}{
+		{name: "turn_id", sql: `ALTER TABLE session_records ADD COLUMN turn_id TEXT`},
+		{name: "refs_json", sql: `ALTER TABLE session_records ADD COLUMN refs_json TEXT`},
+	}
+	for _, migration := range migrations {
+		if columns[migration.name] {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, migration.sql); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) sessionRecordColumns(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(session_records)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		columns[name] = true
+	}
+	return columns, rows.Err()
 }
 
 func (s *Store) Create(ctx context.Context, input CreateInput) (*Session, error) {
@@ -91,9 +142,11 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (*Session, error)
 
 	now := s.now()
 	record := normalizeRecord(SessionRecord{
-		Kind: RecordMessage,
-		Role: "user",
-		Text: input.Prompt,
+		TurnID: input.TurnID,
+		Refs:   input.Refs,
+		Kind:   RecordMessage,
+		Role:   "user",
+		Text:   input.Prompt,
 	}, 1, now)
 
 	session := &Session{
@@ -102,7 +155,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (*Session, error)
 		State:     SessionActive,
 		CreatedAt: now,
 		UpdatedAt: now,
-		Metadata:  SessionMetadata{},
+		Metadata:  input.Metadata,
 		Usage:     updateUsageForAppendedRecord(SessionUsage{}, record),
 		Records:   []SessionRecord{record},
 	}
@@ -389,16 +442,26 @@ func insertRecord(ctx context.Context, tx *sql.Tx, sessionID string, record Sess
 	if len(record.Raw) > 0 {
 		raw = string(record.Raw)
 	}
+	var refs any
+	if len(record.Refs) > 0 {
+		refsJSON, err := json.Marshal(record.Refs)
+		if err != nil {
+			return err
+		}
+		refs = string(refsJSON)
+	}
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO session_records (
-	session_id, seq, id, kind, role, text, raw_json, created_at, char_count, token_count, token_count_source
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	session_id, seq, id, turn_id, kind, role, text, refs_json, raw_json, created_at, char_count, token_count, token_count_source
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID,
 		record.Seq,
 		record.ID,
+		record.TurnID,
 		record.Kind,
 		record.Role,
 		record.Text,
+		refs,
 		raw,
 		record.CreatedAt.Format(time.RFC3339Nano),
 		record.CharCount,
@@ -469,7 +532,7 @@ WHERE id = ?`, id)
 
 func loadRecordsTx(ctx context.Context, tx *sql.Tx, sessionID string) ([]SessionRecord, error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT id, seq, kind, role, text, raw_json, created_at, char_count, token_count, token_count_source
+SELECT id, seq, turn_id, kind, role, text, refs_json, raw_json, created_at, char_count, token_count, token_count_source
 FROM session_records
 WHERE session_id = ?
 ORDER BY seq ASC`, sessionID)
@@ -481,15 +544,19 @@ ORDER BY seq ASC`, sessionID)
 	var records []SessionRecord
 	for rows.Next() {
 		var record SessionRecord
+		var turnID sql.NullString
+		var refs sql.NullString
 		var raw sql.NullString
 		var createdAt string
 		var tokenSource string
 		if err := rows.Scan(
 			&record.ID,
 			&record.Seq,
+			&turnID,
 			&record.Kind,
 			&record.Role,
 			&record.Text,
+			&refs,
 			&raw,
 			&createdAt,
 			&record.CharCount,
@@ -497,6 +564,14 @@ ORDER BY seq ASC`, sessionID)
 			&tokenSource,
 		); err != nil {
 			return nil, err
+		}
+		if turnID.Valid {
+			record.TurnID = turnID.String
+		}
+		if refs.Valid && strings.TrimSpace(refs.String) != "" {
+			if err := json.Unmarshal([]byte(refs.String), &record.Refs); err != nil {
+				return nil, err
+			}
 		}
 		record.Tokens.Source = TokenCountSource(tokenSource)
 		if raw.Valid {

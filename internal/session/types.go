@@ -5,6 +5,23 @@ import (
 	"time"
 )
 
+const (
+	CapabilityName  = "session"
+	ContractVersion = "session.v0.1"
+)
+
+type ContractInfo struct {
+	Capability      string `json:"capability"`
+	ContractVersion string `json:"contract_version"`
+}
+
+func Info() ContractInfo {
+	return ContractInfo{
+		Capability:      CapabilityName,
+		ContractVersion: ContractVersion,
+	}
+}
+
 type SessionState string
 
 const (
@@ -73,6 +90,9 @@ type SessionRecord struct {
 	ID  string `json:"id"`
 	Seq int64  `json:"seq"`
 
+	TurnID string       `json:"turn_id,omitempty"`
+	Refs   []ContextRef `json:"refs,omitempty"`
+
 	Kind RecordKind      `json:"kind"`
 	Role string          `json:"role,omitempty"`
 	Text string          `json:"text,omitempty"`
@@ -82,6 +102,20 @@ type SessionRecord struct {
 
 	CharCount int64      `json:"char_count"`
 	Tokens    TokenCount `json:"tokens"`
+}
+
+type ContextRef struct {
+	Kind     string                     `json:"kind"`
+	Target   string                     `json:"target"`
+	Label    string                     `json:"label,omitempty"`
+	Range    *ContextRefRange           `json:"range,omitempty"`
+	Metadata map[string]json.RawMessage `json:"metadata,omitempty"`
+}
+
+type ContextRefRange struct {
+	Unit  string `json:"unit,omitempty"`
+	Start int64  `json:"start,omitempty"`
+	End   int64  `json:"end,omitempty"`
 }
 
 type RecordKind string
@@ -94,7 +128,10 @@ const (
 )
 
 type CreateInput struct {
-	Prompt string `json:"prompt"`
+	Prompt   string          `json:"prompt"`
+	TurnID   string          `json:"turn_id,omitempty"`
+	Refs     []ContextRef    `json:"refs,omitempty"`
+	Metadata SessionMetadata `json:"metadata,omitempty"`
 }
 
 type ResumeInput struct {

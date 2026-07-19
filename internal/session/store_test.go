@@ -51,6 +51,82 @@ func TestCreateAndResumeSession(t *testing.T) {
 	}
 }
 
+func TestCreateAndMutatePreserveTurnIDRefsAndCWD(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	initialRef := ContextRef{
+		Kind:   "file",
+		Target: "docs/session-capability-contract.md",
+		Label:  "session contract",
+		Range:  &ContextRefRange{Unit: "line", Start: 1, End: 12},
+	}
+	created, err := store.Create(ctx, CreateInput{
+		Prompt: "start here",
+		TurnID: "turn-create",
+		Refs:   []ContextRef{initialRef},
+		Metadata: SessionMetadata{
+			CWD: "/workspace/frankenstein",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.Metadata.CWD != "/workspace/frankenstein" {
+		t.Fatalf("created Metadata.CWD = %q, want /workspace/frankenstein", created.Metadata.CWD)
+	}
+	if created.Records[0].TurnID != "turn-create" {
+		t.Fatalf("initial TurnID = %q, want turn-create", created.Records[0].TurnID)
+	}
+	if len(created.Records[0].Refs) != 1 || created.Records[0].Refs[0].Target != initialRef.Target {
+		t.Fatalf("initial Refs = %+v, want target %q", created.Records[0].Refs, initialRef.Target)
+	}
+
+	mutated, err := store.Mutate(ctx, MutateInput{
+		ID: created.ID,
+		Ops: []MutationOp{
+			{
+				Type: MutationAppendRecord,
+				Record: &SessionRecord{
+					TurnID: "turn-create",
+					Role:   "assistant",
+					Text:   "next",
+					Refs: []ContextRef{{
+						Kind:   "artifact",
+						Target: "artifact://reply-1",
+					}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Mutate() error = %v", err)
+	}
+	if mutated.Records[1].TurnID != "turn-create" {
+		t.Fatalf("mutated TurnID = %q, want turn-create", mutated.Records[1].TurnID)
+	}
+	if len(mutated.Records[1].Refs) != 1 || mutated.Records[1].Refs[0].Kind != "artifact" {
+		t.Fatalf("mutated Refs = %+v, want one artifact ref", mutated.Records[1].Refs)
+	}
+
+	read, err := store.Read(ctx, ReadInput{ID: created.ID})
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if read.Metadata.CWD != "/workspace/frankenstein" {
+		t.Fatalf("read Metadata.CWD = %q, want /workspace/frankenstein", read.Metadata.CWD)
+	}
+	if read.Records[0].TurnID != "turn-create" || read.Records[1].TurnID != "turn-create" {
+		t.Fatalf("read TurnIDs = [%q,%q], want both turn-create", read.Records[0].TurnID, read.Records[1].TurnID)
+	}
+	if len(read.Records[0].Refs) != 1 || read.Records[0].Refs[0].Range == nil || read.Records[0].Refs[0].Range.End != 12 {
+		t.Fatalf("read initial Refs = %+v, want line range ending 12", read.Records[0].Refs)
+	}
+	if len(read.Records[1].Refs) != 1 || read.Records[1].Refs[0].Target != "artifact://reply-1" {
+		t.Fatalf("read appended Refs = %+v, want artifact://reply-1", read.Records[1].Refs)
+	}
+}
+
 func TestCreateRequiresPrompt(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
