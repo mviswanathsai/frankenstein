@@ -2,7 +2,7 @@
 
 Date: 2026-07-18
 
-Contract version: `session.v0.1`.
+Contract version: `session.v0.2`.
 
 Status: draft.
 
@@ -10,9 +10,10 @@ This is a lightweight contract sketch, not a wire protocol or OpenAPI-style
 schema. It names the minimum outside-visible promises a session service must
 make so the rest of an agentic harness can use it without knowing its internals.
 
-This version is verified against the `internal/session` implementation. The Go
-implementation is a concrete service; this document is the capability shape the
-rest of the harness should be able to rely on.
+The initial version was verified against the `internal/session` implementation.
+This draft is now being refined as adjacent contracts exercise it, so the Go
+reference service may temporarily lag accepted contract changes. The document
+is the capability shape the rest of the harness should be able to rely on.
 
 The contract should stay small. A service may be much richer than this, but the
 runtime can only assume the base surface below unless the service advertises
@@ -35,17 +36,10 @@ use for the next turn.
 
 A session service owns:
 
-- session identity
-- lifecycle state
-- monotonically increasing session version
-- created, updated, and deleted timestamps
-- ordered transcript or ordered session record
-- active continuation state
-- usage/accounting state associated with the session
-- optional idempotency records needed to prevent duplicate mutation application
-- session metadata needed by user surfaces, including optional labels, `cwd`,
-  model identity, and custom extension data
-- model-facing session tools, if the service offers any
+- session identity and metadata
+- session lifecycle from creation, persistence, mutation and deletion
+- session logic: append-only, branching, forking, roll-back etc.,
+- usage/accounting state associated with each session
 
 The service may store this state however it wants. The contract does not require
 a database, event log, flat transcript file, provider thread, or branch tree.
@@ -64,11 +58,16 @@ Session {
   created_at
   updated_at
   deleted_at?
-  metadata
-  usage
-  records[]
+  metadata: SessionMetadata
+  usage: SessionUsage
+  records: SessionRecord[]
 }
 ```
+
+`metadata` is exactly one `SessionMetadata` value. `usage` is a separate
+`SessionUsage` value, not a second metadata value and not nested inside
+`metadata`. The distinction is observable in `session.mutate`: `set_metadata`
+replaces `SessionMetadata`, while `set_usage` replaces `SessionUsage`.
 
 `id` is stable for the life of the session.
 
@@ -137,14 +136,14 @@ context pressure, and user surfaces.
 ```text
 SessionUsage {
   char_count
-  last_prompt_tokens
-  last_output_tokens
-  total_input_tokens
-  total_output_tokens
-  total_reasoning_tokens
-  cache_read_tokens
-  cache_write_tokens
-  context_window_tokens
+  last_prompt_tokens: TokenCount
+  last_output_tokens: TokenCount
+  total_input_tokens: TokenCount
+  total_output_tokens: TokenCount
+  total_reasoning_tokens: TokenCount
+  cache_read_tokens: TokenCount
+  cache_write_tokens: TokenCount
+  context_window_tokens: TokenCount
   last_context_used_pct
   api_call_count
 }
@@ -157,9 +156,17 @@ TokenCount {
 TokenCountSource = char_estimate | tokenizer | provider
 ```
 
-Unknown numeric usage values may be zero. Token counts should identify their
-source so a runtime or surface can distinguish rough estimates from tokenizer
-or provider-supplied values.
+`char_count` is the total stored textual size available for cheap diagnostics
+and rough pressure checks. Each token-valued field uses `TokenCount` so the
+session records both the value and whether it came from a character estimate, a
+tokenizer, or a provider. `last_context_used_pct` records the most recent known
+fraction of the model context window used. `api_call_count` records the number
+of model API calls accounted to the session.
+
+Unknown numeric usage values may be zero. Token counts identify their source so
+a runtime or surface can distinguish rough estimates from tokenizer- or
+provider-supplied values. Token accounting belongs to this session-level usage
+surface; it is not required on every conversation record.
 
 Appending records may update usage best-effort. A model adapter or runtime may
 later replace the usage object through `session.mutate` with provider-verified
@@ -174,35 +181,30 @@ must expose these top-level fields:
 ```text
 SessionRecord {
   id
-  seq
-  turn_id?
-  refs?
+  refs[]
   kind
   role?
-  text?
-  raw?
+  text
   created_at
-  char_count
-  tokens
+  updated_at
 }
 ```
 
-`id` is a stable record identity. The service may assign it when the caller does
-not provide one, and may reject a caller-supplied ID that would collide within
-the session.
+`id` is required because records need a stable identity independent of array
+position. References, provenance, diagnostics, and richer advertised mutation
+surfaces may use it to address one particular record. The service may assign it
+when the caller does not provide one and may reject a caller-supplied ID that
+would collide within the session.
 
-`seq` is the canonical order within the session. The service may assign or
-normalize it when needed. `session.read` must return records in canonical
-session order, not insertion order or timestamp order.
+Array position expresses canonical record order in the base contract.
+Implementations may maintain internal sequence numbers, but the base record
+does not expose one because it has no sequence-addressed read, pagination, or
+range operation.
 
-`turn_id` groups records that belong to the same logical user turn. It may be
-generated by the runtime/mediator rather than by the session service, but once
-accepted in a mutation the session service should preserve it as part of the
-ordered record surface.
-
-`refs` are pre-resolved references associated with the record. They may point to
-files, URLs, artifacts, memory records, prior messages, or other externally
-addressable material.
+`refs` is required, though it may be empty, so callers always receive one
+unambiguous reference collection. Its values are pre-resolved references
+associated with the record. They may point to files, URLs, artifacts, memory
+records, prior messages, or other externally addressable material.
 
 Sketch:
 
@@ -210,17 +212,25 @@ Sketch:
 ContextRef {
   kind
   target
-  label?
-  range?
-  metadata?
-}
-
-ContextRefRange {
-  unit?
-  start?
-  end?
 }
 ```
+
+`kind` is required so every service interprets a target consistently rather
+than independently guessing from its string form. Base descriptive kinds are:
+
+```text
+file
+directory
+url
+artifact
+memory
+session_record
+```
+
+Unknown namespaced kinds may be preserved. `target` is the required address or
+identity of the referenced material. Labels, ranges, and arbitrary metadata are
+not part of the base reference shape until a concrete cross-capability consumer
+requires them.
 
 The session service stores and returns refs; it does not have to parse raw text,
 read files, fetch URLs, or decide how refs become model context. Frontends,
@@ -237,40 +247,32 @@ system_note
 ```
 
 If omitted in an append operation, a service may default `kind` to `message`.
+It is required on returned records because role alone cannot distinguish a
+message from a tool call, tool result, or system note.
 
 `role` is the conversation role when the record represents a model-facing or
 user-facing message. Creation from a user prompt must create an initial
-`message` record with role `user`.
+`message` record with role `user`. It is optional because non-message record
+kinds do not necessarily have a conversation role.
 
-`text` is the base textual content field.
+`text` is required canonical conversation content. It is normalized text, not
+provider-formatted replay data. Provider-native model payloads belong to the
+model-adapter or runtime-event surfaces, and structured tool payloads belong to
+the tool invocation and execution surfaces. A session service may persist those
+privately, but other capabilities cannot assume they are present in a session
+record.
 
-`raw` is opaque JSON for provider-native, tool-native, or richer record payloads
-that should be preserved by the session service but are not part of the base
-shared vocabulary.
-
-`char_count` and `tokens` are service-visible accounting for the record. If the
-caller does not provide token accounting, a service may populate an estimate and
-mark its source as `char_estimate`.
+`created_at` records when the record was accepted. `updated_at` initially equals
+`created_at` and records the most recent accepted edit when a richer session
+service advertises editable records. The base actions do not currently expose a
+record-edit operation, but the record shape allows such an implementation
+without inventing a second record type.
 
 The base record surface intentionally does not include a first-class
 `touched_paths` field. Tool-derived path evidence can remain runtime-local or
 context-provider request metadata until real implementations show that it needs
 canonical session persistence. If a path is an explicit user-facing reference,
 it should normally be represented through `refs`.
-
-## Command Model
-
-All commands use the project-level envelope shape:
-
-```text
-CommandEnvelope = action + metadata + payload + causality refs
-```
-
-Commands are requests. Events are recorded outcomes.
-
-A successful direct call may return the terminal event payload synchronously,
-but the terminal event is the canonical output once the mediator/event log
-exists.
 
 ## Required Actions
 
@@ -283,7 +285,6 @@ Base input payload:
 ```json
 {
   "prompt": "user prompt text",
-  "turn_id": "optional runtime-generated turn id",
   "refs": [],
   "metadata": {
     "title": "optional title",
@@ -308,10 +309,10 @@ Creation returns a session with:
 - `created_at` and `updated_at`
 - supplied metadata
 - initial usage/accounting state
-- exactly one initial record with `seq` of `1`, `kind` of `message`, `role` of
-  `user`, and `text` equal to the prompt
+- exactly one initial record with `kind` of `message`, `role` of `user`, and
+  `text` equal to the prompt
 
-Optional `turn_id` and `refs` annotate that first user record when present.
+Supplied `refs` annotate that first user record when present.
 
 Terminal events:
 
@@ -388,9 +389,9 @@ version once for the whole mutation, updates `updated_at`, and returns the
 updated session object.
 
 For appended records, the service assigns any missing base fields it owns, such
-as `id`, `seq`, `kind`, `created_at`, `char_count`, and estimated `tokens`.
-Accepted record mutations preserve supplied top-level `turn_id` and `refs`
-unless the service explicitly rejects or redacts them.
+as `id`, `kind`, `created_at`, and `updated_at`. Accepted record mutations
+preserve supplied top-level `refs` unless the service explicitly rejects or
+redacts them.
 
 If `idempotency_key` is supplied, the service must prevent the same mutation
 from being applied twice to the same session. A repeat request may return the
@@ -425,7 +426,7 @@ may redact or filter for policy reasons, but redaction must be explicit in the
 result.
 
 Read returns a session object and must not mutate session state. Records must be
-returned in canonical `seq` order.
+returned in canonical session order.
 
 Deleted sessions are not readable in the base contract unless a richer service
 surface advertises tombstone or audit reads explicitly.
@@ -455,15 +456,15 @@ MaterializedSession {
   version
   state
   kind
-  metadata
-  usage
-  records[]
+  metadata: SessionMetadata
+  usage: SessionUsage
+  records: SessionRecord[]
 }
 
 ContinuationKind = ordered_records
 ```
 
-For `session.v0.1`, a base service must support `ordered_records`
+For `session.v0.2`, a base service must support `ordered_records`
 materialization. Richer services may advertise additional continuation kinds,
 such as a compacted state or provider-native thread reference, but the `kind`
 field must make that explicit so the runtime does not guess.
@@ -506,25 +507,6 @@ Terminal events:
 - `session.deleted`
 - `session.delete_rejected`
 
-## Service Advertisement
-
-At registration or initialization, the service must advertise the session
-contract version it implements, such as `session.v0.1`, so the mediator can
-reject or adapt incompatible services explicitly.
-
-It must also advertise model-facing session tools, if any. A service with no
-model-facing session tools should make that absence explicit through its normal
-registration metadata once tool advertisement exists.
-
-The reference `internal/session` package exposes:
-
-```text
-ContractInfo {
-  capability: session
-  contract_version: session.v0.1
-}
-```
-
 ## Unsupported Requests
 
 If a caller asks for an action the service does not support, the outcome should
@@ -556,8 +538,8 @@ richer behavior without hardcoding service-specific APIs.
 - `session.read` returns the service's canonical ordered record for the caller.
 - `session.materialize` returns continuation state derived from a known session
   version.
-- Accepted record mutations preserve supplied top-level `turn_id` and `refs`
-  unless the service explicitly rejects or redacts them.
+- Accepted record mutations preserve supplied top-level `refs` unless the
+  service explicitly rejects or redacts them.
 - Missing `cwd` metadata is valid.
 - Failed resume must not silently create accidental continuity.
 - Deleted sessions are not resumable, readable, materializable, or mutable in
@@ -602,14 +584,6 @@ For the current reference behavior:
 
 Compaction is not part of the session capability.
 
-A typical flow is:
-
-```text
-runtime -> session.read or session.materialize
-runtime -> compaction.compact
-runtime -> session.mutate
-```
-
 The compaction service owns the transform strategy. The session service owns the
 record of whatever continuation state is accepted back into the session.
 
@@ -641,61 +615,26 @@ Deletion is terminal for resume/read/materialize/mutate in the base surface.
 Richer services may offer restore, audit read, branch, fork, archive, or
 expiration semantics by advertising additional actions and states.
 
-## Concurrency And Idempotency
-
-The mediator should provide command IDs, causality refs, and idempotency keys.
-For direct-call implementations, the session mutation payload may also carry an
-`idempotency_key`.
-
-The base session mutation payload does not include an expected-version guard.
-The session service should still apply each accepted mutation atomically and
-preserve the ordered session record. Stronger compare-and-swap behavior can be
-advertised by a richer service surface if a harness actually uses it.
-
-Idempotency is scoped to a session. It prevents duplicate application of the
-same accepted mutation, especially duplicate record appends after retry.
-
-## Persistence Expectations
-
-The contract does not require every service to be durable forever.
-
-It does require the service to advertise its persistence mode clearly. A service
-that cannot resume after process exit should say so. A user-facing durable
-session service should make failed persistence visible rather than letting the
-harness pretend continuity is safe.
-
-Persistence is implementation-owned. The reference service uses SQLite, but the
-contract does not require SQLite or any particular storage layout.
-
-## Security And Policy
-
-The service may deny read, mutate, resume, or delete based on caller, surface,
-workspace, policy, or deployment mode.
-
-Policy denial is a valid terminal result. It should be distinguishable from
-"not found", "deleted", and "unsupported".
-
 ## Minimal Test Fixtures
 
 A service implementing the base session contract should be testable with:
 
-- advertise `session.v0.1`
+- advertise `session.v0.2`
 - create a session from a user prompt and receive a stable session identity,
   version `1`, active state, and one initial user message record
 - reject an empty or whitespace-only creation prompt
 - create or mutate with optional metadata fields such as `title`,
   `display_name`, `cwd`, `model_provider`, `model`, and `custom`
-- mutate with one user turn and one assistant turn sharing a `turn_id`
 - mutate with a record that has top-level `refs`
-- read the ordered record back with supplied `turn_id` and `refs` preserved
-- return read records in canonical sequence order
+- read the ordered record back with supplied `refs` preserved
+- return read records in canonical session order
 - materialize continuation state with kind `ordered_records`
 - resume the session by reference without mutating it
 - reject resume, read, and materialize for a missing session
 - reject invalid mutations, including missing ops and missing required op
   payloads
-- append a record and update record/session usage accounting with an identified
-  token source
+- append a record and update session usage accounting with an identified token
+  source
 - replace usage with provider/tokenizer-supplied accounting through
   `set_usage`
 - avoid double-applying the same idempotent mutation
