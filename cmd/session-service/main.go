@@ -35,6 +35,13 @@ func run() error {
 		return usageError("missing command")
 	}
 
+	if args[0] == "version" {
+		if len(args) != 1 {
+			return usageError("version does not accept a session id")
+		}
+		return encode(os.Stdout, session.Info())
+	}
+
 	ctx := context.Background()
 	store, err := session.Open(ctx, *dbPath)
 	if err != nil {
@@ -151,6 +158,6 @@ func (e *exitError) Error() string {
 func usageError(message string) error {
 	return &exitError{
 		Code:    2,
-		Message: message + "\n\nusage: session-service -db sessions.db <create|resume|read|materialize|mutate|delete> [session-id]\n\ncreate input: {\"prompt\":\"...\"}",
+		Message: message + "\n\nusage: session-service -db sessions.db <version|create|resume|read|materialize|mutate|delete> [session-id]\n\ncreate input: {\"prompt\":\"...\"}",
 	}
 }
