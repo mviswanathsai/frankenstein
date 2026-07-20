@@ -364,10 +364,8 @@ ContextCandidate {
   id
   provider_id
   slot
-  custom_slot?
-  slot_description?
 
-  content?                      // normalized material the builder may render
+  content?                      // full length content, not normalized -- that is done by the builder
   refs?                         // dereferenceable file/url/memory/artifact refs
 
   source_kind                   // file | url | memory | transcript | tool | runtime | ...
@@ -496,28 +494,6 @@ fresh candidate, or report that the source could not be used. It should not
 fabricate context to hide retrieval failure. The runtime or context builder
 should be able to continue without a provider unless that provider was
 configured as required.
-
-## Builder Output Events
-
-The context builder should record the actual materialization decision separately
-from provider output.
-
-Example builder event:
-
-```text
-context.built {
-  stable_included[]
-  per_call_included[]
-  omitted[]
-  truncated[]
-  dereferenced[]
-  rendered_messages_or_parts_ref
-  cache_partitioning
-}
-```
-
-Provider events say what was available. Builder events say what the model
-actually saw.
 
 ## Hermes Lessons
 

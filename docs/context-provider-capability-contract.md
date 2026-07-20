@@ -1,6 +1,6 @@
 # Context Provider Capability Contract
 
-Date: 2026-07-18
+Date: 2026-07-20
 
 Contract version: `context_provider.v0`.
 
@@ -18,12 +18,12 @@ surface.
 ## Purpose
 
 The context provider capability supplies structured context candidates for a
-model call.
+model input.
 
 It gives the harness a swappable place to discover and retrieve context such as
 identity, user preferences, project instructions, memory, referenced material,
 skills, workspace facts, warnings, and tool guidance. It does not decide the
-final prompt layout.
+final model input layout.
 
 Context provider and context builder are separate capabilities:
 
@@ -31,6 +31,24 @@ Context provider and context builder are separate capabilities:
   semantics
 - the builder decides what the model actually sees, where it is placed, and
   what is omitted or transformed
+
+The context provider does not own the session's canonical conversation record,
+long-term ordered storage, or final model input. It may receive a scoped view of
+conversation records as request evidence, and it may return candidates derived
+from that view, but storage and final input materialization remain separate
+capabilities.
+
+This contract keeps three concepts independent:
+
+```text
+action              initialize | get_context
+reason              why get_context is being called now
+candidate lifetime  retained | per_call
+```
+
+The action defines lifecycle semantics. The reason gives retrieval/ranking
+evidence. The candidate lifetime tells the builder how long accepted output
+should remain model-visible.
 
 ## Owned State
 
@@ -44,68 +62,72 @@ A context provider may own implementation-private state such as:
 - source freshness metadata
 - tool schemas if it also advertises model-facing tools
 
-The base context-provider action is observational from the harness point of
-view. Calling `context_provider.get_context` must not silently commit durable
-semantic state such as new memories, profile facts, session records, or
-workspace changes.
+The base context-provider actions are observational from the harness point of
+view. Calling `context_provider.initialize` or
+`context_provider.get_context` must not silently commit durable semantic state
+such as new memories, profile facts, session records, or workspace changes.
 
 If a service wants durable writes, model-facing tools, memory observation,
 forget/redact operations, or index rebuild commands, those are separate
 advertised surfaces.
 
-## Layers
+## Candidate Lifetime
 
-Every context response is split into two logical layers:
+Every context response is split by model-visible lifetime:
 
 ```text
 ContextBundle {
-  stable[]
+  retained[]
   per_call[]
 }
 ```
 
-`stable` means context that may remain active beyond the immediate model call
-until session end, scope exit, invalidation, replacement, or explicit omission
-by the builder.
+`retained` means context that, if accepted by the builder, should continue to
+be materialized in later model inputs for the active context/session lifetime
+until scope exit, invalidation, replacement, or explicit removal.
 
 `per_call` means context selected for the immediate model call. A single user
 turn can contain several model calls after tool execution, so this contract uses
 `per_call` instead of `per_turn`.
 
-Stable does not mean system prompt. The builder may materialize stable context
-as a cached prefix, scoped overlay, model message, side channel, reference-only
-entry, or not at all.
+`retained` does not mean system prompt, filesystem-stable, cache-stable, or
+durably persisted. The builder may materialize retained context as a cached
+prefix, scoped overlay, model message, side channel, reference-only entry,
+provider-native handle, repeated request content, or not at all.
 
-Late-discovered stable context is allowed. For example, a subdirectory
-instruction file discovered after a tool touches a path may become stable
+Late-discovered retained context is allowed. For example, a subdirectory
+instruction file discovered after a tool touches a path may become retained
 scoped context inside the same user turn without rebuilding an already-cached
 primary prefix.
 
-## Required Action
+## Required Actions
 
-### `context_provider.get_context`
+### `context_provider.initialize`
 
-Return context candidates for the requested logical layers.
+Establish baseline context candidates for a new context lifecycle before the
+first model invocation.
+
+This action has concrete lifecycle semantics. It is called once before the
+first model invocation in a context/session lifecycle, may perform heavier
+discovery, and returns candidates intended to seed the builder's retained
+model-visible context. The provider may also initialize private indexes,
+watches, handles, or caches needed for later retrieval.
+
+Initialization is not represented as a `reason` for `get_context`. Keeping it
+as a separate action prevents custom reasons from becoming implicit lifecycle
+control signals.
 
 Base input payload:
 
 ```text
-ContextRequest {
+ContextInitializeRequest {
   request_id
-  requested_layers
   session_id?
-  turn_id?
-  is_first_turn?
 
-  current_message?
-  transcript_view?
-
-  trigger?
   runtime?
   workspace_roots?
 
   refs?
-  touched_paths?
 }
 ```
 
@@ -113,89 +135,7 @@ ContextRequest {
 future mediator envelope ID fully replaces this need, a later contract version
 can remove or deprecate it. In `context_provider.v0`, the response echoes it.
 
-`requested_layers` tells the provider which layers the caller wants. Base
-values are:
-
-```text
-stable
-per_call
-both (default)
-```
-
-The provider may return an empty array for a requested layer when it has no
-candidate for that layer.
-
 `session_id` is the active session identity when known.
-
-`turn_id` is the logical turn identity when known. The session capability
-preserves `turn_id` on records in `session.v0.1`, but the runtime or mediator
-may be the component that generates it.
-
-`is_first_turn` is an optional coarse hint for providers that need to emit
-startup context once. It is intentionally simpler than requiring the caller to
-send all active context references in this first version.
-
-`current_message` is the role-aware current message or event that prompted the
-request. It should not assume human/user origin. This is a bit
-
-Sketch:
-
-```text
-ContextMessage {
-  role
-  content?
-  parts?
-  origin?
-  record_id?
-  refs?
-}
-```
-
-`transcript_view` is optional. When present, it should be an explicit view of
-the active/current session state, not the full transcript by default.
-
-Sketch:
-
-```text
-TranscriptView {
-  scope
-  records[]
-  redacted?
-  source_session_id?
-  source_version?
-}
-```
-
-Base `scope` values are descriptive strings such as:
-
-```text
-active_continuation
-recent_window
-whole_session
-redacted_view
-provider_projection
-```
-
-The base context request should not send the full transcript by default. If a
-provider needs broader history, the runtime may pass an explicit
-`transcript_view`, or the provider may request `session.read` through the
-mediator if that access is allowed and advertised.
-
-`trigger` is optional metadata that explains why the provider was invoked. It
-is a loose string, not a required enum. Examples:
-
-```text
-session_start
-user_message
-tool_result
-resume
-scope_change
-provider_policy
-```
-
-Avoid growing a large trigger taxonomy before implementations need it. Highly
-specific cases such as path touches can be represented through request evidence
-such as `touched_paths`.
 
 `runtime` contains small runtime facts that are clearly known by the caller.
 The base contract names only facts we have a concrete need for:
@@ -246,6 +186,96 @@ ContextRefRange {
 from `session.v0.1`. A context provider may dereference refs, return candidates
 derived from refs, or return refs unchanged with provenance.
 
+Terminal events:
+
+- `context_provider.initialized`
+- `context_provider.context_failed`
+
+### `context_provider.get_context`
+
+Supplement an established baseline with newly discovered retained context and
+immediate per-call context.
+
+Base input payload:
+
+```text
+ContextRequest {
+  request_id
+  session_id?
+  turn_id?
+
+  current_message?
+  conversation_view?
+
+  reason?
+  runtime?
+
+  refs?
+  touched_paths?
+}
+```
+
+`request_id` has the same correlation semantics as in
+`context_provider.initialize`.
+
+`session_id` is the active session identity when known.
+
+`turn_id` is the logical turn identity when known. The session capability
+preserves `turn_id` on records in `session.v0.1`, but the runtime or mediator
+may be the component that generates it.
+
+`current_message` is the role-aware current message or event that prompted the
+request. It should not assume human/user origin.
+
+Sketch:
+
+```text
+ContextMessage {
+  role
+  content?
+  parts?
+  origin?
+  record_id?
+  refs?
+}
+```
+
+`conversation_view` has the same meaning as in
+`context_provider.initialize`. It is optional and scoped; full-history access is
+never implied by the presence of `session_id`.
+
+`reason` is optional metadata that explains why the repeatable context action
+was invoked. It gives the implementation retrieval and ranking context. It is
+evidence, not a command, and providers are not required to branch on it.
+
+Common reasons:
+
+```text
+user_message
+tool_result
+scope_change
+resume
+recovery
+provider_policy
+```
+
+Custom reasons should preferably be namespaced, though namespacing is not
+mandatory in `context_provider.v0`:
+
+```text
+company.issue_opened
+obsidian.daily_note_changed
+my_harness.background_followup
+```
+
+Unknown reasons should be accepted and may be treated as generic. Do not use
+`context_initialization` as a reason; initialization is represented by the
+separate `context_provider.initialize` action.
+
+`runtime` has the same meaning as in `context_provider.initialize`.
+
+`refs` has the same meaning as in `context_provider.initialize`.
+
 `touched_paths` is optional request-time evidence from the runtime or tool
 executor. It is not a canonical session-record field in this contract.
 
@@ -276,7 +306,7 @@ Successful output payload:
 ContextBundle {
   request_id
   provider_id
-  stable[]
+  retained[]
   per_call[]
 }
 ```
@@ -286,8 +316,15 @@ ContextBundle {
 `provider_id` identifies the service that produced the bundle. It is required
 for provenance, debugging, primary/shadow comparison, and replay.
 
-`stable` and `per_call` contain `ContextCandidate` values. A provider may return
-empty arrays.
+`retained` and `per_call` contain `ContextCandidate` values. A provider may
+return empty arrays.
+
+For `context_provider.initialize`, returned candidates are normally
+`retained`; `per_call` may be empty. The builder can still reject, transform, or
+scope initialization candidates. For `context_provider.get_context`, either
+array may contain candidates: a provider can discover new retained context
+after initialization, and it can return immediate per-call context for the next
+model invocation.
 
 The base response intentionally does not include `issues`, `degradations`, or
 `failures` arrays. Candidate-local concerns should use `warnings`. A terminal
@@ -336,11 +373,11 @@ custom
 The same slot may appear in either layer:
 
 ```text
-stable.memory
+retained.memory
 per_call.memory
-stable.project_instructions
+retained.project_instructions
 per_call.referenced_material
-stable.skills
+retained.skills
 per_call.skills
 ```
 
@@ -373,7 +410,7 @@ ContextCandidate {
 
   source_kind
   selection_reason
-  trigger?
+  request_reason?
   scope?
   authority?
   confidence?
@@ -406,7 +443,7 @@ strings such as:
 file
 url
 memory
-transcript
+conversation_record
 tool
 runtime
 skill
@@ -419,14 +456,15 @@ provider
 startup_snapshot
 semantic_recall
 explicit_reference
-path_trigger
+path_evidence
 session_resume
 scope_change
 tool_result_followup
 provider_policy
 ```
 
-`trigger` echoes or refines the request trigger when useful.
+`request_reason` echoes or refines the request `reason` when useful. It is
+evidence about why the candidate was selected, not a lifecycle signal.
 
 `scope` describes where the candidate applies. Scope is distinct from layer.
 
@@ -444,10 +482,10 @@ model_call
 artifact(ref="...")
 ```
 
-A candidate may be stable but scoped:
+A candidate may be retained but scoped:
 
 ```text
-stable.project_instructions
+retained.project_instructions
 scope = workspace_subtree("backend/")
 source = "backend/AGENTS.md"
 ```
@@ -507,8 +545,8 @@ truncated, or otherwise transformed content.
 
 ## Invalidation
 
-`invalidation_keys` are optional hints that help the builder decide when stable
-context should be reconsidered.
+`invalidation_keys` are optional hints that help the builder decide when
+retained context should be reconsidered.
 
 Examples:
 
@@ -526,7 +564,7 @@ only supply enough information for that policy to be possible.
 
 ## Side Effects
 
-`context_provider.get_context` may:
+`context_provider.initialize` and `context_provider.get_context` may:
 
 - read allowed sources
 - query memory/search backends
@@ -541,7 +579,7 @@ It must not silently:
 - delete or redact memory
 - mutate project files
 - change tool permission state
-- decide final prompt placement
+- decide final model input placement
 
 Those behaviors require separate advertised actions or other capability
 contracts.
@@ -566,7 +604,7 @@ Expected failure categories:
 
 - provider unavailable
 - request outside allowed scope
-- transcript access denied
+- conversation record access denied
 - source file missing
 - referenced content changed or cannot be validated
 - index unavailable
@@ -574,7 +612,6 @@ Expected failure categories:
 - candidate too large
 - candidate cannot be dereferenced
 - unsafe source content
-- unsupported requested layer
 - provider-specific memory/search failure
 
 Failure should be explicit and degradable. A provider may return empty
@@ -590,20 +627,20 @@ A provider must not fabricate context to hide retrieval failure.
 The runtime or context builder should be able to continue without a provider
 unless that provider was configured as required.
 
-## Transcript Access
+## Conversation Record Access
 
-The base request should not include the full transcript by default.
+The base request should not include the full conversation record by default.
 
 Reasons:
 
-- transcript size grows without bound
+- conversation history size grows without bound
 - many providers only need current message, refs, touched paths, runtime facts,
   or active continuation state
 - full-history access is a policy and privacy decision
-- the session capability owns canonical transcript reads
+- the session capability owns canonical conversation-record reads
 
 When broader history is needed, the caller must make the scope explicit through
-`transcript_view`, or the provider must request `session.read` through the
+`conversation_view`, or the provider must request `session.read` through the
 mediator if it has that advertised access.
 
 ## Memory Interaction
@@ -613,8 +650,8 @@ Memory can interact with this contract in three ways:
 1. Memory as context provider:
 
 ```text
-get_context(requested_layers=stable) -> stable.memory
-get_context(requested_layers=per_call) -> per_call.memory
+initialize(...) -> retained.memory
+get_context(reason=user_message) -> retained.memory, per_call.memory
 ```
 
 2. Memory as model-facing tool provider:
@@ -643,7 +680,7 @@ Skills are part of the context vocabulary.
 
 Examples:
 
-- `stable.skills`: compact skill index or always-on skill guidance
+- `retained.skills`: compact skill index or always-on skill guidance
 - `per_call.skills`: loaded skill body, selected references, or skill-specific
   instructions needed for the immediate call
 
@@ -660,7 +697,7 @@ Example builder event:
 
 ```text
 context.built {
-  stable_included[]
+  retained_included[]
   per_call_included[]
   omitted[]
   truncated[]
@@ -675,7 +712,8 @@ in the final model input.
 
 ## Concurrency And Idempotency
 
-`context_provider.get_context` is read-style and should be safe to retry.
+`context_provider.initialize` and `context_provider.get_context` are read-style
+and should be safe to retry.
 
 `request_id` is a correlation identifier, not a durable write idempotency key.
 Repeated equivalent requests may produce different candidates if underlying
@@ -708,23 +746,29 @@ differences explainable.
 A service implementing the base context-provider contract should be testable
 with:
 
-- return empty `stable` and `per_call` arrays for a valid request with no
+- return empty `retained` and `per_call` arrays for a valid request with no
   applicable context
-- return `stable.project_instructions` from a known project instruction source
-  with file provenance
+- return `retained.project_instructions` from `context_provider.initialize`
+  for a known project instruction source with file provenance
+- return late-discovered `retained.project_instructions` from
+  `context_provider.get_context(reason=tool_result)` when touched paths reveal
+  a scoped instruction source
 - return `per_call.memory` for a query-shaped current message
 - return candidates derived from pre-resolved `refs` without requiring raw text
   parsing
 - preserve `request_id` in `ContextBundle`
 - include `provider_id` in every successful bundle and candidate
 - include provenance for every candidate
-- avoid full transcript access when `transcript_view` is absent
+- avoid full conversation-record access when `conversation_view` is absent
 - accept optional `session_id` and `turn_id`
-- treat `is_first_turn` as a hint, not as the sole source of truth
+- call `context_provider.initialize` for baseline context instead of encoding
+  initialization as `is_first_turn` or `reason=context_initialization`
+- accept unknown `reason` values and treat them as retrieval evidence, not
+  lifecycle commands
 - accept optional `runtime.cwd` and `runtime.current_date`
 - accept optional `workspace_roots`
 - accept optional `touched_paths` as request-time evidence without requiring
   session persistence
-- reject or fail explicitly for unsupported requested layers
 - avoid returning known stale source content as usable context
-- avoid committing durable memory or session writes during `get_context`
+- avoid committing durable memory or session writes during `initialize` or
+  `get_context`
