@@ -1,0 +1,4 @@
+interface:
+  display_name: "Write Capability Contracts"
+  short_description: "Reconcile dossiers with existing capability contracts"
+  default_prompt: "Use the project contract workflow to analyze or update a capability contract without duplicating established types."
