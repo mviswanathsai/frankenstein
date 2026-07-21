@@ -11,6 +11,17 @@ The first implementation can be simple. The important work is the taste with
 which the contract boundaries are chosen and the thoroughness with which those
 contracts are expressed.
 
+## Contract Work Skill
+
+Before analyzing, drafting, or updating capability contracts or their dossiers,
+read `.agents/skills/write-capability-contracts/SKILL.md` and follow its
+workflow. Update that skill when contract work establishes a reusable rule,
+review question, or sequencing improvement that future agents should apply.
+
+Across contract shapes, name a shape's own identity `id`. Name a reference to
+another shape `<subject>_id`, such as `session_id`, `request_id`, or
+`provider_id`. Do not prefix a shape's own `id` with its type name.
+
 ## Vocabulary
 
 Use these terms consistently.
