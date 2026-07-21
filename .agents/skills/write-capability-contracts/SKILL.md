@@ -25,7 +25,19 @@ description: Analyze, draft, review, or update Frankenstein capability contracts
 8. Update this skill when the work reveals a reusable workflow rule or review
    question.
 
+Do not treat an existing contract outline as a required template. Include only
+headings the user has explicitly requested or the current contract discussion
+has deliberately established. Do not copy provisional sections such as service
+advertisement, concurrency, persistence, security, or replay into another
+contract merely for structural completeness.
+
 ## Shape Discipline
+
+Treat shapes as externally observable command inputs and event outputs, not as
+persistence schemas. Owned state describes semantic responsibility; it does not
+prescribe tables, documents, indexes, or internal fields. A field belongs in a
+contract only when an action, event, invariant, replay requirement, or external
+consumer needs to observe it. "A service might store this" is not sufficient.
 
 For every described shape:
 
@@ -33,15 +45,73 @@ For every described shape:
 - mark required and optional fields explicitly
 - explain why every field crosses the capability boundary
 - identify who produces and consumes each field
+- name the action input or event output through which the field is observed
 - define field semantics, not only example values
 - reuse shared identifiers, references, records, and metadata types by name
 - remove fields justified only by possible future implementations
 - allow an extension only when its semantics and preservation rules are clear
 
+For a `v0` contract, require a concrete need today. Do not add a field merely
+because a future implementation, policy, transport, or consumer might use it.
+Add the field in a later version when that need becomes observable.
+
 Do not introduce vague fields such as `raw`, `origin`, `metadata`, or `state`
 without defining what they mean, why the receiver needs them, and which
 capability owns their semantics. Do not encode provider-native formatting in a
 provider-neutral session type.
+
+Do not add a generic provenance shape when existing shared references identify
+source material and parent-level identity identifies the producer. Add only the
+specific source, transformation, or freshness fact that a current consumer
+needs; do not preserve a provenance container merely as a future extension
+point.
+
+Prefer one canonical content field. Do not split normalized, raw, rendered, or
+provider-formatted variants across fields until an observed consumer needs both
+representations and the contract defines precedence between them.
+
+Distinguish usable content from source identity. Require non-empty content on
+candidate shapes; let optional candidate refs identify their sources rather
+than substitute for content. Do not add a separate reference-handoff output
+until a concrete consumer needs it. Define whether input refs may be silently
+dropped and how the producer reports refs it did not dereference. Do not turn a
+single unread ref into a terminal operation failure unless the capability
+cannot otherwise return a useful result.
+
+Name a shape's own identity `id`. Name a reference to another shape
+`<subject>_id`, such as `session_id` or `request_id`. Do not redundantly prefix
+a shape's own `id` with its type name.
+
+Shape collections for the primary consumer's access pattern. When consumers
+retrieve candidates by a mutually exclusive category, prefer category-keyed
+buckets over repeating the category discriminator on every candidate. Keep
+candidate ordering inside each bucket when order remains meaningful.
+
+Do not repeat immutable parent metadata on every contained child. Keep it on
+the parent unless children are independently transported, persisted, or
+interpreted outside that parent boundary.
+
+Do not expose scores such as confidence, relevance, or quality without a
+defined type, scale, calibration domain, and consumer decision. Prefer ordered
+output when the producer only needs to communicate relative ranking.
+
+Do not infer control flow from shared data shapes. Reusing a type does not mean
+the capability that owns the type must be invoked first or that one service
+depends on another service. When reuse is only a practical early-version
+shortcut, say so explicitly, name who else may produce the value, and leave room
+to generalize the boundary when observed needs diverge.
+
+Keep location, discovery scope, and access authority distinct. A working
+directory may anchor relative resolution without granting access. When a
+request carries an access boundary, define empty and omitted behavior, require
+the receiver to enforce the current boundary, and do not let caches or earlier
+requests preserve revoked authority.
+
+Separate a producer's semantic lifetime recommendation from a consumer's
+retention policy. A producer may distinguish ongoing context from one-call
+context when the consumer cannot infer that distinction, while the consumer
+still owns acceptance, caching, indexing, replacement, and eviction. State
+explicitly whether repeated responses are complete snapshots or deltas.
 
 ## Reconciliation Questions
 
