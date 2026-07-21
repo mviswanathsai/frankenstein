@@ -188,6 +188,8 @@ SessionRecord {
   created_at
   updated_at
 }
+
+MessageRole = user | assistant | system
 ```
 
 `id` is required because records need a stable identity independent of array
@@ -250,10 +252,16 @@ If omitted in an append operation, a service may default `kind` to `message`.
 It is required on returned records because role alone cannot distinguish a
 message from a tool call, tool result, or system note.
 
-`role` is the conversation role when the record represents a model-facing or
-user-facing message. Creation from a user prompt must create an initial
-`message` record with role `user`. It is optional because non-message record
-kinds do not necessarily have a conversation role.
+`role` is required when `kind` is `message` and must be absent for other base
+record kinds. The base roles are `user`, `assistant`, and `system`. Creation
+from a user prompt must create an initial `message` record with role `user`.
+
+A `message` with role `system` may preserve system-prompt material that a
+session implementation exposes as part of its transcript. A `system_note` is
+different: it is session-visible text without an implied model-facing role.
+The base contract does not accept implementation-defined roles; role
+extensibility can be added when a concrete cross-capability need establishes
+its semantics.
 
 `text` is required canonical conversation content. It is normalized text, not
 provider-formatted replay data. Provider-native model payloads belong to the
@@ -626,6 +634,8 @@ A service implementing the base session contract should be testable with:
 - create or mutate with optional metadata fields such as `title`,
   `display_name`, `cwd`, `model_provider`, `model`, and `custom`
 - mutate with a record that has top-level `refs`
+- preserve message records with roles `user`, `assistant`, and `system`
+- reject a base `message` record with an unsupported role
 - read the ordered record back with supplied `refs` preserved
 - return read records in canonical session order
 - materialize continuation state with kind `ordered_records`
