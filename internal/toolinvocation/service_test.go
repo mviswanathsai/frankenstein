@@ -101,45 +101,81 @@ func TestProgressiveDisclosureDirectFlow(t *testing.T) {
 	}
 }
 
-func TestToolLoadUsesRequestContextAndFailedLoadDoesNotTransition(t *testing.T) {
-	type availabilityKey struct{}
-	ctx := context.WithValue(context.Background(), availabilityKey{}, true)
+func TestTransientUnavailabilityDoesNotChangeCatalog(t *testing.T) {
+	ctx := context.Background()
+	available := true
+	backendCalled := false
 	service := newTestService(t, func(context.Context, ToolCallStarted) error { return nil }, Registration{
-		Provider: "test", ProviderVersion: "0", LocalName: "contextual",
-		Name: "contextual", Description: "Available in the request context.",
-		InputSchema:  objectSchema(`"value":{"type":"string"}`, "value"),
-		Discoverable: true,
-		Available: func(ctx context.Context) bool {
-			available, _ := ctx.Value(availabilityKey{}).(bool)
-			return available
+		Provider: "test", ProviderVersion: "0", LocalName: "sometimes",
+		Name: "sometimes", Description: "Temporarily unavailable tool.",
+		InputSchema:      objectSchema(`"value":{"type":"string"}`, "value"),
+		InitiallyVisible: true,
+		Discoverable:     true,
+		RuntimeAvailable: func(context.Context) bool { return available },
+		Backend: func(context.Context, BackendRequest) BackendResult {
+			backendCalled = true
+			return BackendResult{Text: "ok"}
 		},
-		Backend: func(context.Context, BackendRequest) BackendResult { return BackendResult{Text: "ok"} },
 	})
-	listed, failure := service.ListTools(ctx, ToolCatalogRequest{ID: "list"})
+	first, failure := service.ListTools(ctx, ToolCatalogRequest{ID: "first"})
 	if failure != nil {
 		t.Fatalf("ListTools() failure = %+v", failure)
 	}
-	load := callFor(t, listed.Catalog, "load", "tool_load", map[string]any{"name": "contextual"})
+	available = false
+	second, failure := service.ListTools(ctx, ToolCatalogRequest{ID: "second"})
+	if failure != nil {
+		t.Fatalf("second ListTools() failure = %+v", failure)
+	}
+	if first.Catalog.ID != second.Catalog.ID || strings.Join(toolNames(second.Catalog), ",") != "tool_search,tool_describe,tool_load,sometimes" {
+		t.Fatalf("catalog changed across outage: first=%+v second=%+v", first.Catalog, second.Catalog)
+	}
+	call := callFor(t, second.Catalog, "call", "sometimes", map[string]any{"value": "x"})
 	result, execFailure := service.Execute(ctx, ToolExecutionRequest{
-		ID: "load", IdempotencyKey: "load", CatalogID: listed.Catalog.ID,
+		ID: "exec", IdempotencyKey: "exec", CatalogID: second.Catalog.ID, Calls: []ToolCall{call},
+	})
+	if execFailure != nil {
+		t.Fatalf("Execute() failure = %+v", execFailure)
+	}
+	if got := result.Results[0].Failure; got == nil || got.Code != FailureToolUnavailable || backendCalled {
+		t.Fatalf("unavailable result = %+v, backendCalled=%v", result.Results[0], backendCalled)
+	}
+}
+
+func TestTemporarilyUnavailableToolCanBeLoaded(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t, func(context.Context, ToolCallStarted) error { return nil }, Registration{
+		Provider: "test", ProviderVersion: "0", LocalName: "later",
+		Name: "later", Description: "Eligible but temporarily unavailable.",
+		InputSchema:      objectSchema(`"value":{"type":"string"}`, "value"),
+		Discoverable:     true,
+		RuntimeAvailable: func(context.Context) bool { return false },
+		Backend:          func(context.Context, BackendRequest) BackendResult { return BackendResult{Text: "ok"} },
+	})
+	listed := mustList(t, service)
+	load := callFor(t, listed, "load", "tool_load", map[string]any{"name": "later"})
+	result, failure := service.Execute(ctx, ToolExecutionRequest{
+		ID: "load", IdempotencyKey: "load", CatalogID: listed.ID,
 		SessionID: "sess", TurnID: "turn", Calls: []ToolCall{load},
 	})
-	if execFailure != nil {
-		t.Fatalf("Execute(load) failure = %+v", execFailure)
+	if failure != nil {
+		t.Fatalf("Execute(load) failure = %+v", failure)
 	}
-	if result.CatalogTransition == nil || strings.Join(toolNames(result.CatalogTransition.Catalog), ",") != "tool_search,tool_describe,tool_load,contextual" {
-		t.Fatalf("contextual load transition = %+v", result.CatalogTransition)
+	if result.CatalogTransition == nil || strings.Join(toolNames(result.CatalogTransition.Catalog), ",") != "tool_search,tool_describe,tool_load,later" {
+		t.Fatalf("load transition = %+v", result.CatalogTransition)
 	}
+}
 
-	missing := load
-	missing.ID = "missing"
-	missing.Arguments = map[string]any{"name": "missing"}
-	result, execFailure = service.Execute(ctx, ToolExecutionRequest{
-		ID: "missing", IdempotencyKey: "missing", CatalogID: listed.Catalog.ID,
-		SessionID: "sess", TurnID: "turn", Calls: []ToolCall{missing},
+func TestFailedLoadDoesNotTransition(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t, func(context.Context, ToolCallStarted) error { return nil }, echoRegistration("echo"))
+	listed := mustList(t, service)
+	load := callFor(t, listed, "missing", "tool_load", map[string]any{"name": "missing"})
+	result, failure := service.Execute(ctx, ToolExecutionRequest{
+		ID: "missing", IdempotencyKey: "missing", CatalogID: listed.ID,
+		SessionID: "sess", TurnID: "turn", Calls: []ToolCall{load},
 	})
-	if execFailure != nil {
-		t.Fatalf("Execute(missing) failure = %+v", execFailure)
+	if failure != nil {
+		t.Fatalf("Execute() failure = %+v", failure)
 	}
 	if result.CatalogTransition != nil {
 		t.Fatalf("failed load returned transition: %+v", result.CatalogTransition)
@@ -330,21 +366,21 @@ func TestValidationFailuresDoNotDispatch(t *testing.T) {
 
 func TestCatalogCacheEvictionMakesLoadUnavailable(t *testing.T) {
 	ctx := context.Background()
-	visibleAvailable := true
 	service := newTestServiceWithOptions(t, Options{
 		CatalogCacheCapacity:   1,
 		AcknowledgeCallStarted: func(context.Context, ToolCallStarted) error { return nil },
-	}, echoRegistration("echo"), Registration{
-		Provider: "test", ProviderVersion: "0", LocalName: "visible",
-		Name: "visible", Description: "Visible while available.",
-		InputSchema:      objectSchema(`"value":{"type":"string"}`, "value"),
-		InitiallyVisible: true,
-		Available:        func(context.Context) bool { return visibleAvailable },
-		Backend:          func(context.Context, BackendRequest) BackendResult { return BackendResult{Text: "visible"} },
-	})
+	}, echoRegistration("echo"))
 
 	first := mustList(t, service)
-	visibleAvailable = false
+	if err := service.Register(Registration{
+		Provider: "test", ProviderVersion: "0", LocalName: "visible",
+		Name: "visible", Description: "Newly registered visible tool.",
+		InputSchema:      objectSchema(`"value":{"type":"string"}`, "value"),
+		InitiallyVisible: true,
+		Backend:          func(context.Context, BackendRequest) BackendResult { return BackendResult{Text: "visible"} },
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
 	second, failure := service.ListTools(ctx, ToolCatalogRequest{ID: "second"})
 	if failure != nil {
 		t.Fatalf("second ListTools() failure = %+v", failure)

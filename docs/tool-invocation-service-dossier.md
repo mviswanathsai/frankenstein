@@ -509,6 +509,11 @@ contract reconciliation, not changes to the current draft by themselves.
   independently implemented capability services can publish tools portably.
   The model-facing `ToolDefinition` should not carry backend routing, policy,
   or authority details.
+- That future publication surface must distinguish publication eligibility
+  from runtime availability. Eligibility decides whether a registered tool may
+  appear in a catalog; availability is transient backend liveness checked at
+  execution. No current shared provider-publication type expresses both facts,
+  and one `available` field must not be made to carry both meanings.
 - Tool definitions are part of the structured model input but are not
   transcript records. Model Invocation receives the selected canonical catalog
   separately from the materialized context and transcript, then encodes those
@@ -572,8 +577,9 @@ contract reconciliation, not changes to the current draft by themselves.
   does not own the runtime's active reference.
 - Catalog construction, including construction after `tool_load`, produces a
   complete snapshot from current registry, authorization, policy, and
-  availability. Cached snapshots supply only the immutable membership and
-  ordering base needed by a catalog-changing call.
+  publication eligibility. Transient backend availability does not change
+  membership or catalog identity. Cached snapshots supply only the immutable
+  membership and ordering base needed by a catalog-changing call.
 - Cache capacity and eviction are implementation choices. A missing base
   produces `catalog_unavailable`; the runtime obtains a fresh catalog for a
   later model invocation. Tool Invocation does not need durable or unbounded
@@ -658,6 +664,10 @@ contract reconciliation, not changes to the current draft by themselves.
 - Keep identical catalog content independent of the requesting principal: two
   callers who receive the same ordered definitions may share one content-derived
   catalog ID, while current authorization is still checked at execution.
+- Treat temporary backend unavailability as an execution-time condition. Keep
+  an otherwise eligible tool discoverable and catalogued, then return
+  `tool_unavailable` when a call cannot currently be dispatched. This avoids
+  catalog churn without weakening execution-time checks.
 - Do not require a generic execution proxy in the first implementation. It is a
   compatibility strategy for providers without late-bound tool publication, or
   for an implementation that deliberately chooses one stable generic call

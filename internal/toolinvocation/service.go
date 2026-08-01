@@ -42,7 +42,7 @@ type Registration struct {
 
 	InitiallyVisible bool
 	Discoverable     bool
-	Available        func(context.Context) bool
+	RuntimeAvailable func(context.Context) bool
 	Backend          BackendFunc
 }
 
@@ -85,7 +85,7 @@ type registeredTool struct {
 	schema           compiledSchema
 	initiallyVisible bool
 	discoverable     bool
-	available        func(context.Context) bool
+	runtimeAvailable func(context.Context) bool
 	backend          BackendFunc
 }
 
@@ -140,11 +140,11 @@ func (s *Service) Info() ContractInfo {
 	return Info()
 }
 
-func (s *Service) ListTools(ctx context.Context, req ToolCatalogRequest) (*ToolCatalogListed, *ToolCatalogFailure) {
+func (s *Service) ListTools(_ context.Context, req ToolCatalogRequest) (*ToolCatalogListed, *ToolCatalogFailure) {
 	if strings.TrimSpace(req.ID) == "" {
 		return nil, &ToolCatalogFailure{RequestID: req.ID, Code: FailureInvalidRequest, Message: "id is required"}
 	}
-	catalog := s.catalogFromIDs(ctx, s.initialToolIDs(ctx))
+	catalog := s.catalogFromIDs(s.initialToolIDs())
 	s.cache.put(catalog)
 	return &ToolCatalogListed{RequestID: req.ID, Catalog: catalog}, nil
 }
@@ -199,7 +199,7 @@ func (s *Service) executeFresh(ctx context.Context, req ToolExecutionRequest) *T
 
 	out := &ToolExecutionResult{RequestID: req.ID, Results: results}
 	if transition != nil && transition.changed {
-		catalog := transition.catalog(ctx, s)
+		catalog := transition.catalog(s)
 		s.cache.put(catalog)
 		out.CatalogTransition = &ToolCatalogTransition{
 			BaseCatalogID: req.CatalogID,
@@ -214,7 +214,7 @@ func (s *Service) executeToolLoad(ctx context.Context, req ToolExecutionRequest,
 		return failedResult(call, tool, FailureCallStartedUnacknowledged, "call_started was not acknowledged", true), transition
 	}
 	name, _ := call.Arguments["name"].(string)
-	target := s.discoverableByName(ctx, name)
+	target := s.discoverableByName(name)
 	if target == nil {
 		return failedResult(call, tool, FailureUnknownTool, fmt.Sprintf("tool is not discoverable: %s", name), false), transition
 	}
@@ -223,7 +223,7 @@ func (s *Service) executeToolLoad(ctx context.Context, req ToolExecutionRequest,
 		if !ok {
 			return failedResult(call, tool, FailureCatalogUnavailable, "base catalog is unavailable", true), nil
 		}
-		transition = s.transitionFromBase(ctx, base)
+		transition = s.transitionFromBase(base)
 	}
 	transition.add(target)
 	return successResult(call, tool, fmt.Sprintf("Loaded tool %q for the next model invocation.", name), SideEffectNone), transition
@@ -263,7 +263,7 @@ func (s *Service) resolveCall(ctx context.Context, call ToolCall) (*registeredTo
 		result := failedResult(call, tool, FailureStaleToolDefinition, "tool definition revision is stale", true)
 		return nil, &result
 	}
-	if !tool.availableNow(ctx) {
+	if !tool.runtimeAvailableNow(ctx) {
 		result := failedResult(call, tool, FailureToolUnavailable, "tool is not currently available", true)
 		return nil, &result
 	}
@@ -274,23 +274,23 @@ func (s *Service) resolveCall(ctx context.Context, call ToolCall) (*registeredTo
 	return tool, nil
 }
 
-func (s *Service) initialToolIDs(ctx context.Context) []string {
+func (s *Service) initialToolIDs() []string {
 	var ids []string
 	for _, tool := range s.orderedTools() {
-		if tool.initiallyVisible && tool.availableNow(ctx) {
+		if tool.initiallyVisible {
 			ids = append(ids, tool.def.ID)
 		}
 	}
 	return ids
 }
 
-func (s *Service) catalogFromIDs(ctx context.Context, ids []string) ToolCatalog {
+func (s *Service) catalogFromIDs(ids []string) ToolCatalog {
 	tools := make([]ToolDefinition, 0, len(ids))
 	for _, id := range ids {
 		s.mu.RLock()
 		tool := s.tools[id]
 		s.mu.RUnlock()
-		if tool == nil || !tool.availableNow(ctx) {
+		if tool == nil {
 			continue
 		}
 		tools = append(tools, cloneDefinition(tool.def))
@@ -300,19 +300,19 @@ func (s *Service) catalogFromIDs(ctx context.Context, ids []string) ToolCatalog 
 	return catalog
 }
 
-func (s *Service) discoverableByName(ctx context.Context, name string) *registeredTool {
+func (s *Service) discoverableByName(name string) *registeredTool {
 	for _, tool := range s.orderedTools() {
-		if tool.discoverable && tool.def.Name == name && tool.availableNow(ctx) {
+		if tool.discoverable && tool.def.Name == name {
 			return tool
 		}
 	}
 	return nil
 }
 
-func (s *Service) discoverableTools(ctx context.Context) []*registeredTool {
+func (s *Service) discoverableTools() []*registeredTool {
 	var out []*registeredTool
 	for _, tool := range s.orderedTools() {
-		if tool.discoverable && tool.availableNow(ctx) {
+		if tool.discoverable {
 			out = append(out, tool)
 		}
 	}
@@ -329,13 +329,13 @@ func (s *Service) orderedTools() []*registeredTool {
 	return tools
 }
 
-func (s *Service) transitionFromBase(ctx context.Context, base ToolCatalog) *transitionBuilder {
+func (s *Service) transitionFromBase(base ToolCatalog) *transitionBuilder {
 	builder := &transitionBuilder{base: base, byID: map[string]bool{}}
 	for _, def := range base.Tools {
 		s.mu.RLock()
 		tool := s.tools[def.ID]
 		s.mu.RUnlock()
-		if tool == nil || !tool.availableNow(ctx) {
+		if tool == nil {
 			builder.changed = true
 			continue
 		}
@@ -392,10 +392,10 @@ func (s *Service) discoveryRegistrations() []Registration {
 	}
 }
 
-func (s *Service) toolSearch(ctx context.Context, req BackendRequest) BackendResult {
+func (s *Service) toolSearch(_ context.Context, req BackendRequest) BackendResult {
 	query := strings.ToLower(strings.TrimSpace(req.Arguments["query"].(string)))
 	var lines []string
-	for _, tool := range s.discoverableTools(ctx) {
+	for _, tool := range s.discoverableTools() {
 		haystack := strings.ToLower(tool.def.Name + " " + tool.def.Description)
 		if query == "" || strings.Contains(haystack, query) {
 			lines = append(lines, fmt.Sprintf("- %s: %s", tool.def.Name, tool.def.Description))
@@ -407,9 +407,9 @@ func (s *Service) toolSearch(ctx context.Context, req BackendRequest) BackendRes
 	return BackendResult{Text: strings.Join(lines, "\n"), SideEffect: SideEffectNone}
 }
 
-func (s *Service) toolDescribe(ctx context.Context, req BackendRequest) BackendResult {
+func (s *Service) toolDescribe(_ context.Context, req BackendRequest) BackendResult {
 	name := req.Arguments["name"].(string)
-	tool := s.discoverableByName(ctx, name)
+	tool := s.discoverableByName(name)
 	if tool == nil {
 		return BackendResult{
 			Status:     ResultFailed,
@@ -466,13 +466,13 @@ func compileRegistration(reg Registration) (*registeredTool, error) {
 		schema:           schema,
 		initiallyVisible: reg.InitiallyVisible,
 		discoverable:     reg.Discoverable,
-		available:        reg.Available,
+		runtimeAvailable: reg.RuntimeAvailable,
 		backend:          reg.Backend,
 	}, nil
 }
 
-func (t *registeredTool) availableNow(ctx context.Context) bool {
-	return t != nil && (t.available == nil || t.available(ctx))
+func (t *registeredTool) runtimeAvailableNow(ctx context.Context) bool {
+	return t != nil && (t.runtimeAvailable == nil || t.runtimeAvailable(ctx))
 }
 
 type transitionBuilder struct {
@@ -491,8 +491,8 @@ func (b *transitionBuilder) add(tool *registeredTool) {
 	b.changed = true
 }
 
-func (b *transitionBuilder) catalog(ctx context.Context, s *Service) ToolCatalog {
-	return s.catalogFromIDs(ctx, b.ids)
+func (b *transitionBuilder) catalog(s *Service) ToolCatalog {
+	return s.catalogFromIDs(b.ids)
 }
 
 type idempotencyKey struct {

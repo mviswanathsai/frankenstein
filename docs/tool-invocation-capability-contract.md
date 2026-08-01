@@ -24,6 +24,10 @@ This contract uses a few repeated terms:
   names and formats have been converted
 - **normalized**: converted from a backend- or provider-specific format into a
   contract shape used by the rest of the harness
+- **publication eligibility**: whether a registered tool is enabled, valid,
+  authorized, policy-allowed, and otherwise eligible to appear in a catalog
+- **runtime availability**: whether an eligible tool's backend can accept and
+  complete a call now; this may change after catalog construction
 - **authority**: caller authorization supplied by the runtime or deployment,
   never by the model; resource containment belongs to the runtime-supplied
   execution sandbox
@@ -225,12 +229,13 @@ ToolCatalogRequest {
 `id` identifies this request. Terminal output refers to it as `request_id`.
 
 `session_id` and `turn_id` identify the current session and turn when known.
-They provide correlation and may affect configured tool availability. They do
-not grant session-record access.
+They provide correlation and may affect configured publication eligibility.
+They do not grant session-record access.
 
 The service determines the catalog from current configuration, current caller
-authorization when configured, backend availability, and the supplied session
-and turn references.
+authorization and policy when configured, registered definition validity, and
+the supplied session and turn references. Transient backend health or runtime
+availability must not by itself add or remove a catalog entry.
 
 Successful output:
 
@@ -416,8 +421,11 @@ cross-boundary result into `ToolResult`.
 - A registration or refresh must not silently replace an unrelated tool with
   the same name.
 - Deliberate replacement must be explicit and auditable.
-- A catalog must not include a tool that is known to be unavailable or
-  unauthorized for the current request.
+- A catalog must not include a tool that is known to be ineligible for
+  publication or unauthorized for the current request.
+- A tool that remains publication-eligible must not be removed merely because
+  its backend is temporarily unavailable. Catalog membership is not a liveness
+  guarantee.
 - A backend becoming unavailable after publication must produce an explicit
   call result; it must not silently drop the call.
 - A catalog is a complete snapshot, not execution authority and not a promise
@@ -429,6 +437,12 @@ cross-boundary result into `ToolResult`.
   historical catalog body.
 - Catalog discovery and registration are implementation details. The harness
   depends on `list_tools`, not on a particular plugin or MCP registry.
+
+The base contract does not yet define the provider-to-Tool-Invocation
+publication shape. When that shape is introduced, it must distinguish
+publication eligibility from runtime availability instead of overloading one
+`available` fact for both. These service-facing facts do not belong in the
+model-facing `ToolDefinition`.
 
 ## Catalog Evidence
 
@@ -454,8 +468,8 @@ history or need it in order to execute calls.
 The snapshot cache is not a mutable current catalog and does not transfer the
 runtime's active-catalog ownership to Tool Invocation. Catalog construction
 always produces a complete snapshot from current registration, authorization,
-policy, and availability. The cache exists only so a catalog-changing call can
-use an earlier immutable snapshot as its base.
+policy, and publication eligibility. The cache exists only so a
+catalog-changing call can use an earlier immutable snapshot as its base.
 
 Cache capacity and eviction policy are implementation configuration. A service
 offering catalog-changing calls must retain at least one snapshot. If the
@@ -478,8 +492,10 @@ named `tool_search`, `tool_describe`, and `tool_load`.
 The normal reasoning flow may be search, describe, then load, but the contract
 does not require a successful description before loading. Tool Invocation must
 resolve every load against the current discoverable registry and current caller
-authorization, policy, backend availability, and definition revision. Knowing a
-tool name or having described it does not grant authority.
+authorization, policy, publication eligibility, and definition revision.
+Knowing a tool name or having described it does not grant authority. Temporary
+backend unavailability does not prevent an otherwise eligible tool from being
+loaded; execution still checks current runtime availability.
 
 For a successful `tool_load`, Tool Invocation derives a new catalog from the
 immutable catalog identified by `ToolExecutionRequest.catalog_id`. Definitions
@@ -492,7 +508,7 @@ snapshot.
 If the requested tool is already present with its current definition, the load
 may succeed without returning a catalog transition. If the base catalog cannot
 be resolved, the load fails with `catalog_unavailable`. A failed, denied, or
-unavailable load does not add its target to a transition.
+publication-ineligible load does not add its target to a transition.
 
 The model-facing result of `tool_load` remains an ordinary `ToolResult`. The
 catalog is not embedded only in `ToolResult.text`; the typed catalog transition
@@ -1239,8 +1255,9 @@ configured
   -> service stopped
 ```
 
-Catalogs may change as configuration, credentials, policy, plugins, MCP
-servers, or backend health change.
+Catalogs may change as configuration, credentials, authorization, policy,
+plugins, MCP servers, or definition validity change. Transient backend health
+does not by itself change a catalog.
 
 Stopping the service must:
 
@@ -1262,7 +1279,9 @@ A service implementing `tool_invocation.v0` should be testable with:
   object-shaped input schemas and content-derived definition revisions
 - return a complete catalog snapshot rather than a delta
 - reject or explicitly resolve duplicate tool names
-- remove a currently unavailable tool from a new catalog
+- omit a tool that is no longer publication-eligible from a new catalog
+- keep an eligible tool and its catalog ID stable across a transient backend
+  outage, then return `tool_unavailable` if it is called while unavailable
 - keep `tool_search` and `tool_describe` catalog-neutral when progressive
   disclosure is enabled
 - load one discoverable tool from a known base catalog and return one complete
