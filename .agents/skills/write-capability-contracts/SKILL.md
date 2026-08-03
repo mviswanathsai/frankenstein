@@ -22,7 +22,11 @@ description: Analyze, draft, review, or update Frankenstein capability contracts
 6. Draft only the genuinely new capability surface after reconciliation.
 7. Compare the result back against all affected contracts for names, required
    fields, ownership, lifecycle, failure, retry, replay, and security semantics.
-8. Update this skill when the work reveals a reusable workflow rule or review
+8. Record durable discussion outcomes that are not yet normative in the
+   affected dossier. Label accepted directions, tentative implementation
+   choices, and open questions distinctly; keep them out of the contract until
+   they create an externally observable obligation.
+9. Update this skill when the work reveals a reusable workflow rule or review
    question.
 
 Do not treat an existing contract outline as a required template. Include only
@@ -101,11 +105,73 @@ depends on another service. When reuse is only a practical early-version
 shortcut, say so explicitly, name who else may produce the value, and leave room
 to generalize the boundary when observed needs diverge.
 
+Distinguish semantic ownership of an artifact from orchestration custody. A
+runtime may request, hold, select, and route an immutable artifact without
+owning its construction rules or being allowed to modify it. Name the sole
+producer, the component that chooses when to use or refresh it, and any adapter
+that may encode it without changing its canonical meaning.
+
+When a model-facing action also changes later runtime inputs, keep its ordinary
+model-facing result separate from a typed runtime control output. Put the
+control output on the command's terminal payload, identify the immutable base
+when replacement is conditional, and require the runtime to apply it before the
+dependent capability call. Do not hide the change in result text, generic
+metadata, an arbitrary flag scanner, or a plugin hook.
+
+Treat staleness as relative to an owning lineage or active head, not as an
+intrinsic property of an immutable artifact. If branching is out of scope,
+state that constraint instead of adding speculative branch identity; a later
+branching contract can define independent heads and conflict rules.
+
+Separate publication eligibility from transient runtime availability. Stable
+registration, enablement, authorization, policy, and definition validity may
+control whether something is published; a momentary liveness observation does
+not guarantee later execution and should not churn an immutable published
+artifact. When a provider-facing type must express both, use distinct facts
+rather than overloading one `available` field.
+
 Keep location, discovery scope, and access authority distinct. A working
 directory may anchor relative resolution without granting access. When a
 request carries an access boundary, define empty and omitted behavior, require
 the receiver to enforce the current boundary, and do not let caches or earlier
 requests preserve revoked authority.
+
+Separate resource containment from caller authorization. A sandbox may enforce
+which files, processes, networks, credentials, or capability handles an
+execution can reach; RBAC or another authorization policy decides which
+authenticated principal may request an action. The point that receives the
+principal and requested action is a natural enforcement point, but that does
+not make it the owner of identities, roles, memberships, or policy. Keep
+runtime-supplied caller identity out of model-written arguments.
+
+For model-facing tools, keep model-written arguments separate from
+runtime-supplied execution context and authority. A model-facing schema must not
+let the model choose its session identity, caller identity, workspace grants,
+approval state, or policy. Name each runtime-supplied fact explicitly rather
+than passing a generic agent-state or metadata object.
+
+For progressive tool discovery or proxy tools, distinguish the model-visible
+bridge from the effective tool target. Define how the target is scoped,
+resolved, validated, authorized, approved, executed, and recorded. A search,
+describe, or proxy call must not bypass the current registration, validation,
+authority, or policy rules that would apply if the effective tool were directly
+visible. Do not assume that returning a schema as ordinary tool-result text
+makes the target provider-natively callable. Direct progressive disclosure must
+also publish the definition through the provider's callable-tool mechanism; if
+that mechanism is unavailable, the alternatives are a later expanded tool
+bundle, an explicit proxy/custom call protocol, or no progressive direct call.
+
+Distinguish provider-native callable exposure from definitions disclosed through
+ordinary model-visible results. Keep the callable catalog exact to the
+provider's callable-tool input. If observability needs a cumulative exposure
+snapshot, model it as a separate immutable artifact and advance it only when
+Model Invocation evidence proves that the disclosure reached the model; a Tool
+Invocation result being produced is not enough.
+
+When an operation can have side effects, represent call outcome separately from
+side-effect certainty. Timeout, cancellation, disconnection, or an error return
+does not prove that no effect happened. Contracts must preserve `unknown` or
+partial effect outcomes so retry and recovery do not silently duplicate work.
 
 Separate a producer's semantic lifetime recommendation from a consumer's
 retention policy. A producer may distinguish ongoing context from one-call

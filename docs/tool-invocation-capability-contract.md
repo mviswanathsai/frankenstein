@@ -461,9 +461,11 @@ catalog produced by Tool Invocation. Model Invocation chooses only the provider
 encoding of that publication.
 
 Catalog bodies may be stored once and shared by every event that references
-them. A session's catalog timeline and the union of tools ever shown are derived
-from its ordered Model Invocation records. Tool Invocation does not own that
-history or need it in order to execute calls.
+them. A session's callable-catalog timeline and the union of tools ever offered
+through the provider's callable-tool mechanism are derived from its ordered
+Model Invocation records. Definitions disclosed through ordinary tool-result
+text are separate model-input evidence and do not change `ToolCatalog`. Tool
+Invocation does not own either history or need it in order to execute calls.
 
 The snapshot cache is not a mutable current catalog and does not transfer the
 runtime's active-catalog ownership to Tool Invocation. Catalog construction
@@ -527,10 +529,12 @@ runtime -> next model invocation with transition.catalog
 model -> direct call to the loaded tool
 ```
 
-Progressive disclosure does not require a generic execution proxy. A service
-may publish such a proxy as an alternate strategy, but the proxy is an ordinary
-catalogued tool and must not bypass effective-target validation, authorization,
-policy, approval, execution containment, or result rules.
+Progressive disclosure may use a generic execution proxy instead of changing
+the callable catalog. The proxy is an ordinary catalogued tool and must not
+bypass effective-target validation, authorization, policy, approval, execution
+containment, or result rules. A description returned as ordinary result text
+may inform a later proxy call but does not make its target provider-natively
+callable.
 
 ## Tool Call
 
@@ -1300,7 +1304,7 @@ A service implementing `tool_invocation.v0` should be testable with:
 - reject adoption of a transition whose base no longer matches the runtime's
   active catalog
 - record generic proxy dispatch as an attempt against its effective target when
-  the proxy experiment mode is enabled
+  proxy dispatch is enabled
 - execute one valid read-only call and return `succeeded + none`
 - execute one valid mutating call and return an honest side-effect value
 - reject an unknown tool with `failed + none`

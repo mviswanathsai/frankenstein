@@ -1,6 +1,6 @@
 # Tool Invocation Service Dossier
 
-Date: 2026-08-01
+Date: 2026-08-03
 
 Status: working capability analysis.
 
@@ -22,7 +22,9 @@ It has two related jobs:
 
 The capability aggregates tools from built-in handlers, plugins, other
 capabilities, MCP servers, and remote backends. Those sources are implementation
-details. The runtime sees one catalog and one execution surface.
+details. The execution runtime sees one callable catalog and one execution
+surface. Observability may separately project the canonical definitions that
+have been disclosed through model-visible results.
 
 Tool Invocation owns tool-execution state. It does not own the whole agent
 loop, the canonical session record, or the domain state behind every tool.
@@ -563,10 +565,12 @@ contract reconciliation, not changes to the current draft by themselves.
 - The canonical catalog alone does not prove exactly what was sent to a model
   provider. Model Invocation must retain the provider-encoded tool bundle, or a
   durable reference to it, when exact model-input replay is required.
-- Catalogs are immutable, content-addressed model-input evidence. Store each
-  canonical body once, let every Model Invocation event reference the catalog
-  it used, and derive a session's catalog timeline and union of tools ever shown
-  from those ordered events.
+- Catalogs are immutable, content-addressed callable model-input evidence. Store
+  each canonical body once, let every Model Invocation event reference the
+  catalog it used, and derive a session's provider-native callable-catalog
+  timeline from those ordered events. Definitions shown through
+  `tool_describe` require separate exposure evidence because they are not
+  members of the callable catalog.
 - Tool Invocation does not own historical catalog retention or resolve
   execution through historical catalogs. Model Invocation attaches canonical
   tool identity and definition revision to a normalized call; Tool Invocation
@@ -621,6 +625,50 @@ contract reconciliation, not changes to the current draft by themselves.
   event store; it waits for the mediator's acknowledgement and does not dispatch
   the backend when the record cannot be acknowledged.
 
+#### Progressive-disclosure experiment outcome
+
+- The reference direction for progressive disclosure is the stable generic
+  proxy: `tool_search`, `tool_describe`, then `tool_call`. Direct
+  `tool_load` and catalog expansion remain a supported comparison strategy, not
+  the selected reference direction.
+- In the one-shot DeepSeek V4 Flash experiment, proxy disclosure avoided the
+  extra load/model round trip and provider tool-bundle replacement. Both
+  strategies completed all nested tasks. Proxy produced two first-attempt
+  wrapper mistakes across 30 nested trials; direct produced none.
+- In delayed reuse, direct calls were immediately exact in 50/50 trials. Proxy
+  calls reused the earlier description and successful proxy example directly
+  in 49/50 trials across approximately 0 to 138,000 intervening tokens. The one
+  remaining trial searched, described, and then succeeded exactly. All 100
+  delayed-reuse trials completed successfully.
+- Steady-state provider caching was effectively identical: both strategies
+  missed roughly 0.11 percent of prompt tokens. This does not erase the
+  one-time cache disruption observed when direct loading replaced the callable
+  tool bundle.
+- Local benchmarks showed modest proxy dispatch overhead for steady execution,
+  while one-shot proxy execution was substantially cheaper than local
+  load-plus-transition-plus-execution. These microbenchmarks do not represent
+  network or model latency.
+- The evidence is exploratory: one model deployment, synthetic cases, ten
+  repetitions per cell, and no context compression, branching, or long history
+  of genuine tool turns. It supports proxy dispatch as a credible reference
+  choice; it does not prove universal model reliability.
+
+#### Tool exposure evidence
+
+- The callable `ToolCatalog` and the cumulative set of fully disclosed tool
+  definitions are different immutable artifacts. They begin with the same
+  definitions and diverge after a successful `tool_describe` result is actually
+  included in a later model invocation.
+- The cumulative artifact is observability and replay evidence only. It must
+  never change the provider tool bundle, dispatch authority, validation, or
+  runtime catalog adoption.
+- Tool Invocation owns canonical definitions and produces structured atomic
+  description evidence. An observability projection owns the ordered exposure
+  timeline and content-addressed exposure snapshots.
+- The non-normative implementation plan is
+  `docs/tool-exposure-catalog-plan.md`. Exact event references are deliberately
+  deferred until the eventing primitives are designed.
+
 ### Tentative Implementation Choices
 
 - Use the canonical tool ID directly as the initial RBAC resource instead of
@@ -668,13 +716,12 @@ contract reconciliation, not changes to the current draft by themselves.
   an otherwise eligible tool discoverable and catalogued, then return
   `tool_unavailable` when a call cannot currently be dispatched. This avoids
   catalog churn without weakening execution-time checks.
-- Do not require a generic execution proxy in the first implementation. It is a
-  compatibility strategy for providers without late-bound tool publication, or
-  for an implementation that deliberately chooses one stable generic call
-  surface. If added later, the effective registered target must be first-class
-  event evidence and all validation, authorization, policy, approval,
-  concurrency, runtime-supplied execution containment, result handling, and
-  side-effect reporting rules apply to that target.
+- Use the generic execution proxy as the reference progressive-disclosure
+  strategy. Keep direct `tool_load` as an experiment and compatibility path for
+  providers whose native late-bound publication is advantageous. The effective
+  registered target remains first-class event evidence, and all validation,
+  authorization, policy, approval, concurrency, runtime-supplied execution
+  containment, result handling, and side-effect reporting rules apply to it.
 - When proxy dispatch is enabled, emit first-class
   `tool_invocation.proxy_dispatch_attempted` evidence identifying the
   model-visible proxy, requested target name, and resolved effective target
