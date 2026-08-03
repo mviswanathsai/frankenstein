@@ -101,6 +101,197 @@ func TestProgressiveDisclosureDirectFlow(t *testing.T) {
 	}
 }
 
+func TestProgressiveDisclosureProxyFlow(t *testing.T) {
+	ctx := context.Background()
+	var starts []ToolCallStarted
+	var attempts []ToolProxyDispatchAttempted
+	service := newProxyTestService(t, testAck(&starts), testProxyAck(&attempts), echoRegistration("echo"))
+
+	listed := mustList(t, service)
+	if got := strings.Join(toolNames(listed), ","); got != "tool_search,tool_describe,tool_call" {
+		t.Fatalf("proxy catalog names = %s", got)
+	}
+
+	proxy := callFor(t, listed, "proxy-call", "tool_call", map[string]any{
+		"name":      "echo",
+		"arguments": map[string]any{"text": "hello"},
+	})
+	result, failure := service.Execute(ctx, ToolExecutionRequest{
+		ID:             "exec-proxy",
+		IdempotencyKey: "idem-proxy",
+		CatalogID:      listed.ID,
+		Calls:          []ToolCall{proxy},
+	})
+	if failure != nil {
+		t.Fatalf("Execute(proxy) failure = %+v", failure)
+	}
+	if result.CatalogTransition != nil {
+		t.Fatalf("proxy returned transition: %+v", result.CatalogTransition)
+	}
+	got := result.Results[0]
+	if got.CallID != "proxy-call" || got.Name != "echo" || got.ToolID == "" || got.Text != "echo: hello" {
+		t.Fatalf("proxy result = %+v, want original call id and effective target", got)
+	}
+	if len(attempts) != 1 || attempts[0].RequestedTargetName != "echo" || attempts[0].EffectiveToolID != got.ToolID {
+		t.Fatalf("proxy attempts = %+v", attempts)
+	}
+	if len(starts) != 1 || starts[0].Name != "echo" || starts[0].ToolID != got.ToolID {
+		t.Fatalf("call_started = %+v, want effective target", starts)
+	}
+}
+
+func TestProxyAttemptRecorderFailurePreventsBackendDispatch(t *testing.T) {
+	ctx := context.Background()
+	backendCalled := false
+	service := newProxyTestService(t,
+		func(context.Context, ToolCallStarted) error { return nil },
+		func(context.Context, ToolProxyDispatchAttempted) error { return errors.New("recorder down") },
+		Registration{
+			Provider: "test", ProviderVersion: "0", LocalName: "mutate",
+			Name: "mutate", Description: "Mutate test state.",
+			InputSchema:  objectSchema(`"value":{"type":"string"}`, "value"),
+			Discoverable: true,
+			Backend: func(context.Context, BackendRequest) BackendResult {
+				backendCalled = true
+				return BackendResult{Text: "mutated", SideEffect: SideEffectApplied}
+			},
+		},
+	)
+	listed := mustList(t, service)
+	proxy := callFor(t, listed, "proxy-call", "tool_call", map[string]any{
+		"name":      "mutate",
+		"arguments": map[string]any{"value": "x"},
+	})
+
+	result, failure := service.Execute(ctx, ToolExecutionRequest{
+		ID: "exec", IdempotencyKey: "idem", CatalogID: listed.ID, Calls: []ToolCall{proxy},
+	})
+	if failure != nil {
+		t.Fatalf("Execute() failure = %+v", failure)
+	}
+	if backendCalled {
+		t.Fatalf("backend was called despite failed proxy attempt recorder")
+	}
+	got := result.Results[0]
+	if got.Name != "mutate" || got.Failure == nil || got.Failure.Code != FailureProxyDispatchUnrecorded {
+		t.Fatalf("result = %+v, want effective-target proxy recorder failure", got)
+	}
+}
+
+func TestProxyAttemptEmittedForUnknownAndInvalidNestedArguments(t *testing.T) {
+	ctx := context.Background()
+	var attempts []ToolProxyDispatchAttempted
+	backendCalled := false
+	service := newProxyTestService(t, func(context.Context, ToolCallStarted) error { return nil }, testProxyAck(&attempts), Registration{
+		Provider: "test", ProviderVersion: "0", LocalName: "strict",
+		Name: "strict", Description: "Strict target.",
+		InputSchema:  objectSchema(`"value":{"type":"string"}`, "value"),
+		Discoverable: true,
+		Backend: func(context.Context, BackendRequest) BackendResult {
+			backendCalled = true
+			return BackendResult{Text: "ok"}
+		},
+	})
+	listed := mustList(t, service)
+	unknown := callFor(t, listed, "unknown", "tool_call", map[string]any{
+		"name":      "missing",
+		"arguments": map[string]any{"value": "x"},
+	})
+	invalid := callFor(t, listed, "invalid", "tool_call", map[string]any{
+		"name":      "strict",
+		"arguments": map[string]any{"value": 1},
+	})
+
+	result, failure := service.Execute(ctx, ToolExecutionRequest{
+		ID: "exec", IdempotencyKey: "idem", CatalogID: listed.ID, Calls: []ToolCall{unknown, invalid},
+	})
+	if failure != nil {
+		t.Fatalf("Execute() failure = %+v", failure)
+	}
+	if backendCalled {
+		t.Fatalf("backend was called for invalid proxy cases")
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %+v, want two", attempts)
+	}
+	if attempts[0].RequestedTargetName != "missing" || attempts[0].EffectiveToolID != "" {
+		t.Fatalf("unknown attempt = %+v", attempts[0])
+	}
+	if attempts[1].RequestedTargetName != "strict" || attempts[1].EffectiveToolID == "" {
+		t.Fatalf("invalid-args attempt = %+v", attempts[1])
+	}
+	if result.Results[0].Failure.Code != FailureUnknownTool || result.Results[1].Failure.Code != FailureInvalidArguments {
+		t.Fatalf("results = %+v", result.Results)
+	}
+}
+
+func TestProxyOuterSchemaValidationAfterAttemptPreventsBackend(t *testing.T) {
+	ctx := context.Background()
+	var attempts []ToolProxyDispatchAttempted
+	backendCalled := false
+	service := newProxyTestService(t, func(context.Context, ToolCallStarted) error { return nil }, testProxyAck(&attempts), Registration{
+		Provider: "test", ProviderVersion: "0", LocalName: "strict",
+		Name: "strict", Description: "Strict target.",
+		InputSchema:  objectSchema(`"value":{"type":"string"}`, "value"),
+		Discoverable: true,
+		Backend: func(context.Context, BackendRequest) BackendResult {
+			backendCalled = true
+			return BackendResult{Text: "ok"}
+		},
+	})
+	listed := mustList(t, service)
+	extra := callFor(t, listed, "extra", "tool_call", map[string]any{
+		"name":       "strict",
+		"arguments":  map[string]any{"value": "x"},
+		"unexpected": true,
+	})
+	missingArguments := callFor(t, listed, "missing-args", "tool_call", map[string]any{
+		"name": "strict",
+	})
+
+	result, failure := service.Execute(ctx, ToolExecutionRequest{
+		ID: "exec", IdempotencyKey: "idem", CatalogID: listed.ID, Calls: []ToolCall{extra, missingArguments},
+	})
+	if failure != nil {
+		t.Fatalf("Execute() failure = %+v", failure)
+	}
+	if backendCalled {
+		t.Fatalf("backend was called for invalid outer proxy arguments")
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %+v, want two parseable-name attempts", attempts)
+	}
+	for i, got := range result.Results {
+		if got.Name != "strict" || got.Failure == nil || got.Failure.Code != FailureInvalidArguments {
+			t.Fatalf("result[%d] = %+v, want effective-target invalid_arguments", i, got)
+		}
+	}
+}
+
+func TestProxyUnparseableNameDoesNotEmitAttempt(t *testing.T) {
+	ctx := context.Background()
+	var attempts []ToolProxyDispatchAttempted
+	service := newProxyTestService(t, func(context.Context, ToolCallStarted) error { return nil }, testProxyAck(&attempts), echoRegistration("echo"))
+	listed := mustList(t, service)
+	call := callFor(t, listed, "bad-name", "tool_call", map[string]any{
+		"name":      123,
+		"arguments": map[string]any{"text": "hello"},
+	})
+
+	result, failure := service.Execute(ctx, ToolExecutionRequest{
+		ID: "exec", IdempotencyKey: "idem", CatalogID: listed.ID, Calls: []ToolCall{call},
+	})
+	if failure != nil {
+		t.Fatalf("Execute() failure = %+v", failure)
+	}
+	if len(attempts) != 0 {
+		t.Fatalf("attempts = %+v, want none", attempts)
+	}
+	if got := result.Results[0].Failure; got == nil || got.Code != FailureInvalidArguments {
+		t.Fatalf("result = %+v, want invalid_arguments", result.Results[0])
+	}
+}
+
 func TestTransientUnavailabilityDoesNotChangeCatalog(t *testing.T) {
 	ctx := context.Background()
 	available := true
@@ -265,6 +456,168 @@ func TestBackendPanicBecomesUnknownSideEffect(t *testing.T) {
 	got := result.Results[0]
 	if got.Failure == nil || got.Failure.Code != FailureBackendFailed || got.SideEffect != SideEffectUnknown {
 		t.Fatalf("result = %+v, want backend_failed + unknown", got)
+	}
+}
+
+func TestNestedSchemaValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		schema     []byte
+		args       map[string]any
+		wantStatus ToolResultStatus
+		wantError  string
+	}{
+		{
+			name: "valid nested object",
+			schema: []byte(`{"type":"object","additionalProperties":false,"properties":{
+				"customer":{"type":"object","additionalProperties":false,"properties":{
+					"id":{"type":"string"},
+					"address":{"type":"object","additionalProperties":false,"properties":{"city":{"type":"string"},"zip":{"type":"integer"}},"required":["city","zip"]}
+				},"required":["id","address"]}
+			},"required":["customer"]}`),
+			args:       map[string]any{"customer": map[string]any{"id": "C-7", "address": map[string]any{"city": "Paris", "zip": 75001}}},
+			wantStatus: ResultSucceeded,
+		},
+		{
+			name: "missing nested required property",
+			schema: []byte(`{"type":"object","additionalProperties":false,"properties":{
+				"customer":{"type":"object","additionalProperties":false,"properties":{"id":{"type":"string"},"address":{"type":"object","additionalProperties":false,"properties":{"city":{"type":"string"}},"required":["city"]}},"required":["id","address"]}
+			},"required":["customer"]}`),
+			args:      map[string]any{"customer": map[string]any{"id": "C-7", "address": map[string]any{}}},
+			wantError: `missing required argument "customer.address.city"`,
+		},
+		{
+			name: "nested additionalProperties false",
+			schema: []byte(`{"type":"object","additionalProperties":false,"properties":{
+				"customer":{"type":"object","additionalProperties":false,"properties":{"id":{"type":"string"}},"required":["id"]}
+			},"required":["customer"]}`),
+			args:      map[string]any{"customer": map[string]any{"id": "C-7", "extra": true}},
+			wantError: `unknown argument "customer.extra"`,
+		},
+		{
+			name: "valid array of objects",
+			schema: []byte(`{"type":"object","additionalProperties":false,"properties":{
+				"order":{"type":"object","additionalProperties":false,"properties":{
+					"items":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"sku":{"type":"string"},"quantity":{"type":"integer"}},"required":["sku","quantity"]}}
+				},"required":["items"]}
+			},"required":["order"]}`),
+			args:       map[string]any{"order": map[string]any{"items": []any{map[string]any{"sku": "SKU-1", "quantity": 2}, map[string]any{"sku": "SKU-2", "quantity": 3}}}},
+			wantStatus: ResultSucceeded,
+		},
+		{
+			name: "invalid field inside array element",
+			schema: []byte(`{"type":"object","additionalProperties":false,"properties":{
+				"order":{"type":"object","additionalProperties":false,"properties":{
+					"items":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"sku":{"type":"string"},"quantity":{"type":"integer"}},"required":["sku","quantity"]}}
+				},"required":["items"]}
+			},"required":["order"]}`),
+			args:      map[string]any{"order": map[string]any{"items": []any{map[string]any{"sku": "SKU-1", "quantity": 2}, map[string]any{"sku": "SKU-2", "quantity": "3"}}}},
+			wantError: `argument "order.items[1].quantity" must be integer`,
+		},
+		{
+			name: "incorrect deeply nested type",
+			schema: []byte(`{"type":"object","additionalProperties":false,"properties":{
+				"order":{"type":"object","additionalProperties":false,"properties":{"delivery":{"type":"object","additionalProperties":false,"properties":{"priority":{"type":"boolean"}},"required":["priority"]}},"required":["delivery"]}
+			},"required":["order"]}`),
+			args:      map[string]any{"order": map[string]any{"delivery": map[string]any{"priority": "true"}}},
+			wantError: `argument "order.delivery.priority" must be boolean`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := newTestService(t, func(context.Context, ToolCallStarted) error { return nil }, Registration{
+				Provider: "test", ProviderVersion: "0", LocalName: "nested",
+				Name: "nested", Description: "Nested schema target.",
+				InputSchema:      tt.schema,
+				InitiallyVisible: true,
+				Backend: func(context.Context, BackendRequest) BackendResult {
+					return BackendResult{Text: "ok", SideEffect: SideEffectNone}
+				},
+			})
+			catalog := mustList(t, service)
+			result, failure := service.Execute(context.Background(), ToolExecutionRequest{
+				ID:             "exec",
+				IdempotencyKey: "idem",
+				CatalogID:      catalog.ID,
+				Calls:          []ToolCall{callFor(t, catalog, "call", "nested", tt.args)},
+			})
+			if failure != nil {
+				t.Fatalf("Execute() failure = %+v", failure)
+			}
+			got := result.Results[0]
+			if tt.wantStatus == ResultSucceeded {
+				if got.Status != ResultSucceeded {
+					t.Fatalf("result = %+v, want succeeded", got)
+				}
+				return
+			}
+			if got.Failure == nil || got.Failure.Code != FailureInvalidArguments || got.Text != tt.wantError {
+				t.Fatalf("result = %+v, want invalid_arguments %q", got, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestUnsupportedNestedSchemaRejectedAtRegistration(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema []byte
+	}{
+		{
+			name:   "unsupported enum",
+			schema: []byte(`{"type":"object","properties":{"value":{"type":"string","enum":["a"]}}}`),
+		},
+		{
+			name:   "array requires items",
+			schema: []byte(`{"type":"object","properties":{"values":{"type":"array"}}}`),
+		},
+		{
+			name:   "tuple array rejected",
+			schema: []byte(`{"type":"object","properties":{"values":{"type":"array","items":[{"type":"string"}]}}}`),
+		},
+		{
+			name:   "nested bounds rejected",
+			schema: []byte(`{"type":"object","properties":{"values":{"type":"array","items":{"type":"string"},"minItems":1}}}`),
+		},
+		{
+			name:   "null items on object rejected",
+			schema: []byte(`{"type":"object","items":null}`),
+		},
+		{
+			name:   "null object keyword on scalar rejected",
+			schema: []byte(`{"type":"object","properties":{"value":{"type":"string","properties":null}}}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewService(Options{AcknowledgeCallStarted: func(context.Context, ToolCallStarted) error { return nil }}, Registration{
+				Provider: "test", ProviderVersion: "0", LocalName: "bad",
+				Name: "bad", Description: "Bad schema.",
+				InputSchema:      tt.schema,
+				InitiallyVisible: true,
+				Backend:          func(context.Context, BackendRequest) BackendResult { return BackendResult{Text: "ok"} },
+			})
+			if err == nil {
+				t.Fatalf("NewService() error = nil, want schema rejection")
+			}
+		})
+	}
+}
+
+func TestSchemaValidationErrorsAreDeterministic(t *testing.T) {
+	schema, _, err := compileSchema([]byte(`{"type":"object","additionalProperties":false,"properties":{"a":{"type":"string"},"z":{"type":"string"}},"required":["z","a"]}`))
+	if err != nil {
+		t.Fatalf("compileSchema() error = %v", err)
+	}
+	for range 100 {
+		if got := schema.validate(map[string]any{}); got == nil || got.Error() != `missing required argument "a"` {
+			t.Fatalf("required error = %v", got)
+		}
+		if got := schema.validate(map[string]any{"a": "ok", "z": "ok", "y": true, "b": true}); got == nil || got.Error() != `unknown argument "b"` {
+			t.Fatalf("unknown error = %v", got)
+		}
 	}
 }
 
@@ -488,7 +841,7 @@ func TestRegistrationRejectsUnsupportedSchemasAndBadIDs(t *testing.T) {
 		InputSchema: []byte(`{"type":"object","properties":{"value":{"type":"string","description":"not in subset"}}}`),
 		Backend:     func(context.Context, BackendRequest) BackendResult { return BackendResult{Text: "x"} },
 	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported property schema keyword") {
+	if err == nil || !strings.Contains(err.Error(), `unsupported schema keyword "description"`) {
 		t.Fatalf("unsupported schema error = %v", err)
 	}
 
@@ -559,9 +912,25 @@ func newTestServiceWithOptions(t *testing.T, opts Options, regs ...Registration)
 	return service
 }
 
+func newProxyTestService(t *testing.T, ack CallStartedAcknowledger, proxyAck ProxyDispatchAcknowledger, regs ...Registration) *Service {
+	t.Helper()
+	return newTestServiceWithOptions(t, Options{
+		DiscoveryStrategy:        DiscoveryProxy,
+		AcknowledgeCallStarted:   ack,
+		AcknowledgeProxyDispatch: proxyAck,
+	}, regs...)
+}
+
 func testAck(starts *[]ToolCallStarted) CallStartedAcknowledger {
 	return func(_ context.Context, event ToolCallStarted) error {
 		*starts = append(*starts, event)
+		return nil
+	}
+}
+
+func testProxyAck(attempts *[]ToolProxyDispatchAttempted) ProxyDispatchAcknowledger {
+	return func(_ context.Context, event ToolProxyDispatchAttempted) error {
+		*attempts = append(*attempts, event)
 		return nil
 	}
 }

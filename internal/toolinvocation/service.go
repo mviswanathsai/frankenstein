@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 
@@ -22,13 +23,25 @@ const (
 	discoveryProvider           = "frankenstein.discovery"
 	discoveryProviderVersion    = "0"
 	toolLoadID                  = discoveryProvider + ":" + discoveryProviderVersion + ":tool_load"
+	toolCallID                  = discoveryProvider + ":" + discoveryProviderVersion + ":tool_call"
 )
 
 type CallStartedAcknowledger func(context.Context, ToolCallStarted) error
 
+type ProxyDispatchAcknowledger func(context.Context, ToolProxyDispatchAttempted) error
+
+type DiscoveryStrategy string
+
+const (
+	DiscoveryDirect DiscoveryStrategy = ""
+	DiscoveryProxy  DiscoveryStrategy = "proxy"
+)
+
 type Options struct {
-	CatalogCacheCapacity   int
-	AcknowledgeCallStarted CallStartedAcknowledger
+	CatalogCacheCapacity     int
+	DiscoveryStrategy        DiscoveryStrategy
+	AcknowledgeCallStarted   CallStartedAcknowledger
+	AcknowledgeProxyDispatch ProxyDispatchAcknowledger
 }
 
 type Registration struct {
@@ -92,6 +105,12 @@ type registeredTool struct {
 func NewService(opts Options, registrations ...Registration) (*Service, error) {
 	if opts.AcknowledgeCallStarted == nil {
 		return nil, errors.New("toolinvocation: AcknowledgeCallStarted is required")
+	}
+	if opts.DiscoveryStrategy != DiscoveryDirect && opts.DiscoveryStrategy != DiscoveryProxy {
+		return nil, fmt.Errorf("toolinvocation: unsupported discovery strategy %q", opts.DiscoveryStrategy)
+	}
+	if opts.DiscoveryStrategy == DiscoveryProxy && opts.AcknowledgeProxyDispatch == nil {
+		return nil, errors.New("toolinvocation: AcknowledgeProxyDispatch is required for proxy discovery")
 	}
 	if opts.CatalogCacheCapacity <= 0 {
 		opts.CatalogCacheCapacity = defaultCatalogCacheCapacity
@@ -194,6 +213,10 @@ func (s *Service) executeFresh(ctx context.Context, req ToolExecutionRequest) *T
 			results = append(results, result)
 			continue
 		}
+		if tool.def.Name == "tool_call" {
+			results = append(results, s.executeToolCall(ctx, req, call, tool))
+			continue
+		}
 		results = append(results, s.dispatchBackend(ctx, req.ID, call, tool))
 	}
 
@@ -227,6 +250,66 @@ func (s *Service) executeToolLoad(ctx context.Context, req ToolExecutionRequest,
 	}
 	transition.add(target)
 	return successResult(call, tool, fmt.Sprintf("Loaded tool %q for the next model invocation.", name), SideEffectNone), transition
+}
+
+func (s *Service) executeToolCall(ctx context.Context, req ToolExecutionRequest, call ToolCall, proxy *registeredTool) ToolResult {
+	targetName, ok := call.Arguments["name"].(string)
+	targetName = strings.TrimSpace(targetName)
+	if !ok || targetName == "" {
+		return failedResult(call, proxy, FailureInvalidArguments, `argument "name" must be string`, false)
+	}
+	target := s.discoverableByName(targetName)
+	attempt := ToolProxyDispatchAttempted{
+		RequestID:           req.ID,
+		CallID:              call.ID,
+		ProxyToolID:         proxy.def.ID,
+		RequestedTargetName: targetName,
+	}
+	if target != nil {
+		attempt.EffectiveToolID = target.def.ID
+		attempt.EffectiveDefinitionRevision = target.def.Revision
+	}
+	if err := s.opts.AcknowledgeProxyDispatch(ctx, attempt); err != nil {
+		if target != nil {
+			return failedResult(call, target, FailureProxyDispatchUnrecorded, "proxy dispatch attempt was not recorded", true)
+		}
+		result := *callFailure(call, FailureProxyDispatchUnrecorded, "proxy dispatch attempt was not recorded", true)
+		result.Name = targetName
+		return result
+	}
+	if err := proxy.schema.validate(call.Arguments); err != nil {
+		return proxyFailure(call, target, targetName, FailureInvalidArguments, err.Error(), false)
+	}
+	if target == nil {
+		result := *callFailure(call, FailureUnknownTool, fmt.Sprintf("tool is not discoverable: %s", targetName), false)
+		result.Name = targetName
+		return result
+	}
+	nested, ok := call.Arguments["arguments"].(map[string]any)
+	if !ok {
+		return failedResult(call, target, FailureInvalidArguments, `argument "arguments" must be object`, false)
+	}
+	if err := target.schema.validate(nested); err != nil {
+		return failedResult(call, target, FailureInvalidArguments, err.Error(), false)
+	}
+	if !target.runtimeAvailableNow(ctx) {
+		return failedResult(call, target, FailureToolUnavailable, "tool is not currently available", true)
+	}
+	effectiveCall := call
+	effectiveCall.ToolID = target.def.ID
+	effectiveCall.DefinitionRevision = target.def.Revision
+	effectiveCall.Name = target.def.Name
+	effectiveCall.Arguments = nested
+	return s.dispatchBackend(ctx, req.ID, effectiveCall, target)
+}
+
+func proxyFailure(call ToolCall, target *registeredTool, targetName, code, text string, retryable bool) ToolResult {
+	if target != nil {
+		return failedResult(call, target, code, text, retryable)
+	}
+	result := *callFailure(call, code, text, retryable)
+	result.Name = targetName
+	return result
 }
 
 func (s *Service) dispatchBackend(ctx context.Context, requestID string, call ToolCall, tool *registeredTool) (out ToolResult) {
@@ -266,6 +349,9 @@ func (s *Service) resolveCall(ctx context.Context, call ToolCall) (*registeredTo
 	if !tool.runtimeAvailableNow(ctx) {
 		result := failedResult(call, tool, FailureToolUnavailable, "tool is not currently available", true)
 		return nil, &result
+	}
+	if tool.def.Name == "tool_call" {
+		return tool, nil
 	}
 	if err := tool.schema.validate(call.Arguments); err != nil {
 		result := failedResult(call, tool, FailureInvalidArguments, err.Error(), false)
@@ -368,7 +454,7 @@ type lineageKey struct {
 
 func (s *Service) discoveryRegistrations() []Registration {
 	schema := func(value string) json.RawMessage { return json.RawMessage(value) }
-	return []Registration{
+	regs := []Registration{
 		{
 			Provider: discoveryProvider, ProviderVersion: discoveryProviderVersion, LocalName: "tool_search",
 			Name: "tool_search", Description: "Search currently discoverable tools.",
@@ -381,7 +467,19 @@ func (s *Service) discoveryRegistrations() []Registration {
 			InputSchema:      schema(`{"additionalProperties":false,"properties":{"name":{"type":"string"}},"required":["name"],"type":"object"}`),
 			InitiallyVisible: true, Backend: s.toolDescribe,
 		},
-		{
+	}
+	if s.opts.DiscoveryStrategy == DiscoveryProxy {
+		return append(regs, Registration{
+			Provider: discoveryProvider, ProviderVersion: discoveryProviderVersion, LocalName: "tool_call",
+			Name: "tool_call", Description: "Call one currently discoverable tool by name. Use name for the target tool and arguments for that tool's argument object.",
+			InputSchema:      schema(`{"additionalProperties":false,"properties":{"arguments":{"type":"object"},"name":{"type":"string"}},"required":["name","arguments"],"type":"object"}`),
+			InitiallyVisible: true, Backend: func(context.Context, BackendRequest) BackendResult {
+				return BackendResult{Status: ResultSucceeded, Text: "proxy call accepted", SideEffect: SideEffectNone}
+			},
+		})
+	}
+	return append(regs,
+		Registration{
 			Provider: discoveryProvider, ProviderVersion: discoveryProviderVersion, LocalName: "tool_load",
 			Name: "tool_load", Description: "Load one discoverable tool into the next model-facing catalog.",
 			InputSchema:      schema(`{"additionalProperties":false,"properties":{"name":{"type":"string"}},"required":["name"],"type":"object"}`),
@@ -389,7 +487,7 @@ func (s *Service) discoveryRegistrations() []Registration {
 				return BackendResult{Status: ResultSucceeded, Text: "tool load accepted", SideEffect: SideEffectNone}
 			},
 		},
-	}
+	)
 }
 
 func (s *Service) toolSearch(_ context.Context, req BackendRequest) BackendResult {
@@ -776,9 +874,15 @@ func (c *catalogCache) get(id string) (ToolCatalog, bool) {
 }
 
 type compiledSchema struct {
-	properties           map[string]string
+	root schemaNode
+}
+
+type schemaNode struct {
+	typ                  string
+	properties           map[string]schemaNode
 	required             map[string]bool
 	allowAdditionalProps bool
+	items                *schemaNode
 }
 
 func compileSchema(raw json.RawMessage) (compiledSchema, json.RawMessage, error) {
@@ -786,100 +890,181 @@ func compileSchema(raw json.RawMessage) (compiledSchema, json.RawMessage, error)
 	if err := decodeJSON(raw, &root); err != nil {
 		return compiledSchema{}, nil, err
 	}
-	for key := range root {
-		switch key {
-		case "type", "properties", "required", "additionalProperties":
-		default:
-			return compiledSchema{}, nil, fmt.Errorf("unsupported top-level schema keyword %q", key)
-		}
+	node, err := compileSchemaNode(root, "schema")
+	if err != nil {
+		return compiledSchema{}, nil, err
 	}
-	if root["type"] != "object" {
+	if node.typ != "object" {
 		return compiledSchema{}, nil, errors.New("top-level schema type must be object")
-	}
-	schema := compiledSchema{
-		properties:           map[string]string{},
-		required:             map[string]bool{},
-		allowAdditionalProps: true,
-	}
-	if value, ok := root["additionalProperties"]; ok {
-		allowed, ok := value.(bool)
-		if !ok {
-			return compiledSchema{}, nil, errors.New("additionalProperties must be boolean")
-		}
-		schema.allowAdditionalProps = allowed
-	}
-	if props, ok := root["properties"]; ok {
-		propsMap, ok := props.(map[string]any)
-		if !ok {
-			return compiledSchema{}, nil, errors.New("properties must be an object")
-		}
-		for name, value := range propsMap {
-			prop, ok := value.(map[string]any)
-			if !ok {
-				return compiledSchema{}, nil, fmt.Errorf("property %q schema must be an object", name)
-			}
-			for key := range prop {
-				if key != "type" {
-					return compiledSchema{}, nil, fmt.Errorf("unsupported property schema keyword %q", key)
-				}
-			}
-			typ, ok := prop["type"].(string)
-			if !ok || !supportedJSONType(typ) {
-				return compiledSchema{}, nil, fmt.Errorf("unsupported property type for %q", name)
-			}
-			schema.properties[name] = typ
-		}
-	}
-	if required, ok := root["required"]; ok {
-		items, ok := required.([]any)
-		if !ok {
-			return compiledSchema{}, nil, errors.New("required must be an array")
-		}
-		for _, item := range items {
-			name, ok := item.(string)
-			if !ok {
-				return compiledSchema{}, nil, errors.New("required entries must be strings")
-			}
-			if _, ok := schema.properties[name]; !ok {
-				return compiledSchema{}, nil, fmt.Errorf("required property %q is not defined", name)
-			}
-			schema.required[name] = true
-		}
 	}
 	canonical, err := canonicalJSON(root)
 	if err != nil {
 		return compiledSchema{}, nil, err
 	}
-	return schema, canonical, nil
+	return compiledSchema{root: node}, canonical, nil
+}
+
+func compileSchemaNode(raw map[string]any, path string) (schemaNode, error) {
+	for _, key := range sortedKeys(raw) {
+		switch key {
+		case "type", "properties", "required", "additionalProperties", "items":
+		default:
+			return schemaNode{}, fmt.Errorf("unsupported schema keyword %q at %s", key, path)
+		}
+	}
+	typ, ok := raw["type"].(string)
+	if !ok || !supportedJSONType(typ) {
+		return schemaNode{}, fmt.Errorf("unsupported schema type at %s", path)
+	}
+	node := schemaNode{
+		typ:                  typ,
+		properties:           map[string]schemaNode{},
+		required:             map[string]bool{},
+		allowAdditionalProps: true,
+	}
+
+	switch typ {
+	case "object":
+		if value, ok := raw["additionalProperties"]; ok {
+			allowed, ok := value.(bool)
+			if !ok {
+				return schemaNode{}, fmt.Errorf("additionalProperties must be boolean at %s", path)
+			}
+			node.allowAdditionalProps = allowed
+		}
+		if _, ok := raw["items"]; ok {
+			return schemaNode{}, fmt.Errorf("items is only supported for array schemas at %s", path)
+		}
+		if props, ok := raw["properties"]; ok {
+			propsMap, ok := props.(map[string]any)
+			if !ok {
+				return schemaNode{}, fmt.Errorf("properties must be an object at %s", path)
+			}
+			for _, name := range sortedKeys(propsMap) {
+				value := propsMap[name]
+				prop, ok := value.(map[string]any)
+				if !ok {
+					return schemaNode{}, fmt.Errorf("property %q schema must be an object", name)
+				}
+				child, err := compileSchemaNode(prop, path+"."+name)
+				if err != nil {
+					return schemaNode{}, err
+				}
+				node.properties[name] = child
+			}
+		}
+		if required, ok := raw["required"]; ok {
+			items, ok := required.([]any)
+			if !ok {
+				return schemaNode{}, fmt.Errorf("required must be an array at %s", path)
+			}
+			for _, item := range items {
+				name, ok := item.(string)
+				if !ok {
+					return schemaNode{}, fmt.Errorf("required entries must be strings at %s", path)
+				}
+				if _, ok := node.properties[name]; !ok {
+					return schemaNode{}, fmt.Errorf("required property %q is not defined at %s", name, path)
+				}
+				node.required[name] = true
+			}
+		}
+	case "array":
+		_, hasProperties := raw["properties"]
+		_, hasRequired := raw["required"]
+		_, hasAdditionalProperties := raw["additionalProperties"]
+		if hasProperties || hasRequired || hasAdditionalProperties {
+			return schemaNode{}, fmt.Errorf("object keywords are not supported for array schemas at %s", path)
+		}
+		items, ok := raw["items"]
+		if !ok {
+			return schemaNode{}, fmt.Errorf("array schema at %s requires items", path)
+		}
+		itemMap, ok := items.(map[string]any)
+		if !ok {
+			return schemaNode{}, fmt.Errorf("array items at %s must be a schema object", path)
+		}
+		itemNode, err := compileSchemaNode(itemMap, path+"[]")
+		if err != nil {
+			return schemaNode{}, err
+		}
+		node.items = &itemNode
+	default:
+		_, hasProperties := raw["properties"]
+		_, hasRequired := raw["required"]
+		_, hasAdditionalProperties := raw["additionalProperties"]
+		_, hasItems := raw["items"]
+		if hasProperties || hasRequired || hasAdditionalProperties || hasItems {
+			return schemaNode{}, fmt.Errorf("only type is supported for %s schema at %s", typ, path)
+		}
+	}
+	return node, nil
 }
 
 func (s compiledSchema) validate(args map[string]any) error {
 	if args == nil {
 		args = map[string]any{}
 	}
-	for name := range s.required {
-		if _, ok := args[name]; !ok {
-			return fmt.Errorf("missing required argument %q", name)
-		}
+	return s.root.validate(args, "")
+}
+
+func (s schemaNode) validate(value any, path string) error {
+	if !matchesJSONType(value, s.typ) {
+		return fmt.Errorf("argument %q must be %s", path, s.typ)
 	}
-	for name, value := range args {
-		typ, ok := s.properties[name]
-		if !ok {
-			if s.allowAdditionalProps {
-				continue
+	switch s.typ {
+	case "object":
+		args := value.(map[string]any)
+		for _, name := range sortedKeys(s.required) {
+			childPath := joinArgumentPath(path, name)
+			if _, ok := args[name]; !ok {
+				return fmt.Errorf("missing required argument %q", childPath)
 			}
-			return fmt.Errorf("unknown argument %q", name)
 		}
-		if !matchesJSONType(value, typ) {
-			return fmt.Errorf("argument %q must be %s", name, typ)
+		for _, name := range sortedKeys(args) {
+			childValue := args[name]
+			child, ok := s.properties[name]
+			childPath := joinArgumentPath(path, name)
+			if !ok {
+				if s.allowAdditionalProps {
+					continue
+				}
+				return fmt.Errorf("unknown argument %q", childPath)
+			}
+			if err := child.validate(childValue, childPath); err != nil {
+				return err
+			}
+		}
+	case "array":
+		items := value.([]any)
+		for i, item := range items {
+			if err := s.items.validate(item, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
+func sortedKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+func joinArgumentPath(parent, child string) string {
+	if parent == "" {
+		return child
+	}
+	return parent + "." + child
+}
+
 func supportedJSONType(typ string) bool {
 	switch typ {
-	case "string", "number", "integer", "boolean":
+	case "string", "number", "integer", "boolean", "object", "array":
 		return true
 	default:
 		return false
@@ -899,6 +1084,12 @@ func matchesJSONType(value any, typ string) bool {
 	case "integer":
 		n, ok := numberValue(value)
 		return ok && math.Trunc(n) == n
+	case "object":
+		_, ok := value.(map[string]any)
+		return ok
+	case "array":
+		_, ok := value.([]any)
+		return ok
 	default:
 		return false
 	}

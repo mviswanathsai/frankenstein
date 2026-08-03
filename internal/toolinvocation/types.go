@@ -145,6 +145,15 @@ type ToolCallStarted struct {
 	Name      string `json:"name"`
 }
 
+type ToolProxyDispatchAttempted struct {
+	RequestID                   string `json:"request_id"`
+	CallID                      string `json:"call_id"`
+	ProxyToolID                 string `json:"proxy_tool_id"`
+	RequestedTargetName         string `json:"requested_target_name"`
+	EffectiveToolID             string `json:"effective_tool_id,omitempty"`
+	EffectiveDefinitionRevision string `json:"effective_definition_revision,omitempty"`
+}
+
 const (
 	FailureUnknownTool               = "unknown_tool"
 	FailureInvalidArguments          = "invalid_arguments"
@@ -157,6 +166,7 @@ const (
 	FailureTimedOut                  = "timed_out"
 	FailureOutcomeUnknown            = "outcome_unknown"
 	FailureCallStartedUnacknowledged = "tool_invocation.call_started_unacknowledged"
+	FailureProxyDispatchUnrecorded   = "tool_invocation.proxy_dispatch_unrecorded"
 
 	FailureInvalidRequest        = "invalid_request"
 	FailureMissingIdempotencyKey = "missing_idempotency_key"
