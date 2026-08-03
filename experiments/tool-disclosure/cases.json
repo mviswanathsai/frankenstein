@@ -1,0 +1,197 @@
+[
+  {
+    "id": "one-hidden-once",
+    "prompt": "Find the total for invoice inv-001. Discover and use the hidden invoice_total tool, then finish with SENTINEL:ONE-HIDDEN-ONCE.",
+    "expected_final_contains": "SENTINEL:ONE-HIDDEN-ONCE",
+    "tools": [
+      {
+        "name": "invoice_total",
+        "description": "Return the total for an invoice. Use invoice_id.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"invoice_id":{"type":"string"}},"required":["invoice_id"]},
+        "response": "invoice inv-001 total is 42",
+        "expected_arguments": {"invoice_id":"inv-001"}
+      }
+    ],
+    "expected_backend_calls": [
+      {"name":"invoice_total","arguments":{"invoice_id":"inv-001"}}
+    ]
+  },
+  {
+    "id": "one-hidden-repeated",
+    "prompt": "Look up two invoices, inv-101 and inv-202, using the hidden invoice_total tool. Finish with SENTINEL:ONE-HIDDEN-REPEATED.",
+    "expected_final_contains": "SENTINEL:ONE-HIDDEN-REPEATED",
+    "tools": [
+      {
+        "name": "invoice_total",
+        "description": "Return the total for one invoice. Use invoice_id.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"invoice_id":{"type":"string"}},"required":["invoice_id"]},
+        "response": "invoice total returned",
+        "expected_arguments": {"invoice_id":"inv-101"}
+      }
+    ],
+    "expected_backend_calls": [
+      {"name":"invoice_total","arguments":{"invoice_id":"inv-101"}},
+      {"name":"invoice_total","arguments":{"invoice_id":"inv-202"}}
+    ]
+  },
+  {
+    "id": "several-hidden-tools",
+    "prompt": "Use hidden tools to get customer c-7, order o-9, and shipment s-3. Finish with SENTINEL:SEVERAL-HIDDEN.",
+    "expected_final_contains": "SENTINEL:SEVERAL-HIDDEN",
+    "tools": [
+      {
+        "name": "customer_lookup",
+        "description": "Look up a customer by customer_id.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"customer_id":{"type":"string"}},"required":["customer_id"]},
+        "response": "customer c-7 is Ada",
+        "expected_arguments": {"customer_id":"c-7"}
+      },
+      {
+        "name": "order_lookup",
+        "description": "Look up an order by order_id.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"order_id":{"type":"string"}},"required":["order_id"]},
+        "response": "order o-9 is paid",
+        "expected_arguments": {"order_id":"o-9"}
+      },
+      {
+        "name": "shipment_lookup",
+        "description": "Look up a shipment by shipment_id.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"shipment_id":{"type":"string"}},"required":["shipment_id"]},
+        "response": "shipment s-3 is delivered",
+        "expected_arguments": {"shipment_id":"s-3"}
+      }
+    ],
+    "expected_backend_calls": [
+      {"name":"customer_lookup","arguments":{"customer_id":"c-7"}},
+      {"name":"order_lookup","arguments":{"order_id":"o-9"}},
+      {"name":"shipment_lookup","arguments":{"shipment_id":"s-3"}}
+    ]
+  },
+  {
+    "id": "decoy-tools",
+    "prompt": "Get current weather for Paris. Use the current-weather hidden tool, not archive or alarm tools. Finish with SENTINEL:DECOY.",
+    "expected_final_contains": "SENTINEL:DECOY",
+    "tools": [
+      {
+        "name": "weather_current",
+        "description": "Return current weather for a city.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"city":{"type":"string"}},"required":["city"]},
+        "response": "Paris current weather is clear",
+        "expected_arguments": {"city":"Paris"}
+      },
+      {
+        "name": "weather_archive",
+        "description": "Return archived weather for a city and date.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"city":{"type":"string"},"date":{"type":"string"}},"required":["city","date"]},
+        "response": "archive response"
+      },
+      {
+        "name": "weather_alarm",
+        "description": "Create a weather alarm.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"city":{"type":"string"},"threshold":{"type":"number"}},"required":["city","threshold"]},
+        "response": "alarm response"
+      }
+    ],
+    "expected_backend_calls": [
+      {"name":"weather_current","arguments":{"city":"Paris"}}
+    ]
+  },
+  {
+    "id": "large-schema",
+    "prompt": "Create a travel quote for traveler t-5 from SFO to NRT on 2026-09-10, premium cabin false, budget 3000. Finish with SENTINEL:LARGE-SCHEMA.",
+    "expected_final_contains": "SENTINEL:LARGE-SCHEMA",
+    "tools": [
+      {
+        "name": "travel_quote",
+        "description": "Create a travel quote with traveler_id, origin, destination, depart_date, premium, and max_budget.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"traveler_id":{"type":"string"},"origin":{"type":"string"},"destination":{"type":"string"},"depart_date":{"type":"string"},"premium":{"type":"boolean"},"max_budget":{"type":"number"}},"required":["traveler_id","origin","destination","depart_date","premium","max_budget"]},
+        "response": "quote q-55 is ready",
+        "expected_arguments": {"traveler_id":"t-5","origin":"SFO","destination":"NRT","depart_date":"2026-09-10","premium":false,"max_budget":3000}
+      }
+    ],
+    "expected_backend_calls": [
+      {"name":"travel_quote","arguments":{"traveler_id":"t-5","origin":"SFO","destination":"NRT","depart_date":"2026-09-10","premium":false,"max_budget":3000}}
+    ]
+  },
+  {
+    "id": "negative-no-tool",
+    "prompt": "Do not use tools. Answer directly with SENTINEL:NO-TOOL.",
+    "expected_final_contains": "SENTINEL:NO-TOOL",
+    "tools": [
+      {
+        "name": "irrelevant_lookup",
+        "description": "An irrelevant hidden lookup tool.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"value":{"type":"string"}},"required":["value"]},
+        "response": "should not run"
+      }
+    ],
+    "expected_backend_calls": []
+  },
+  {
+    "id": "temporarily-unavailable",
+    "prompt": "Try to use the hidden outage_probe tool for service api-7. If it is unavailable, say so and finish with SENTINEL:UNAVAILABLE.",
+    "expected_final_contains": "SENTINEL:UNAVAILABLE",
+    "tools": [
+      {
+        "name": "outage_probe",
+        "description": "Probe one service by service_id.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"service_id":{"type":"string"}},"required":["service_id"]},
+        "response": "should not run",
+        "runtime_available": false,
+        "expected_arguments": {"service_id":"api-7"}
+      }
+    ],
+    "expected_backend_calls": []
+  },
+  {
+    "id": "nested-object",
+    "prompt": "Submit customer profile CUST-Alpha-7 for customer name Ada Lovelace. The address is street 12 Analytical Engine Way, city London, postal_code NW1-6XE, country UK. Discover and use exactly one hidden submit_customer_profile tool call, then finish with SENTINEL:NESTED-OBJECT.",
+    "expected_final_contains": "SENTINEL:NESTED-OBJECT",
+    "tools": [
+      {
+        "name": "submit_customer_profile",
+        "description": "Submit one customer profile. Use a customer object with id, name, and nested address.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"customer":{"type":"object","additionalProperties":false,"properties":{"id":{"type":"string"},"name":{"type":"string"},"address":{"type":"object","additionalProperties":false,"properties":{"street":{"type":"string"},"city":{"type":"string"},"postal_code":{"type":"string"},"country":{"type":"string"}},"required":["street","city","postal_code","country"]}},"required":["id","name","address"]}},"required":["customer"]},
+        "response": "customer profile CUST-Alpha-7 accepted",
+        "expected_arguments": {"customer":{"id":"CUST-Alpha-7","name":"Ada Lovelace","address":{"street":"12 Analytical Engine Way","city":"London","postal_code":"NW1-6XE","country":"UK"}}}
+      }
+    ],
+    "expected_backend_calls": [
+      {"name":"submit_customer_profile","arguments":{"customer":{"id":"CUST-Alpha-7","name":"Ada Lovelace","address":{"street":"12 Analytical Engine Way","city":"London","postal_code":"NW1-6XE","country":"UK"}}}}
+    ]
+  },
+  {
+    "id": "nested-array",
+    "prompt": "Price order ORDER-Beta-3 with exactly two line items. First item: item_id SKU-Red-01, quantity 2, unit_price 19.5. Second item: item_id SKU-Blue-02, quantity 5, unit_price 4.25. Discover and use exactly one hidden price_order tool call, then finish with SENTINEL:NESTED-ARRAY.",
+    "expected_final_contains": "SENTINEL:NESTED-ARRAY",
+    "tools": [
+      {
+        "name": "price_order",
+        "description": "Price one order. Use order_id and an items array. Each item has item_id, quantity, and unit_price.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"order_id":{"type":"string"},"items":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"item_id":{"type":"string"},"quantity":{"type":"integer"},"unit_price":{"type":"number"}},"required":["item_id","quantity","unit_price"]}}},"required":["order_id","items"]},
+        "response": "order ORDER-Beta-3 priced",
+        "expected_arguments": {"order_id":"ORDER-Beta-3","items":[{"item_id":"SKU-Red-01","quantity":2,"unit_price":19.5},{"item_id":"SKU-Blue-02","quantity":5,"unit_price":4.25}]}
+      }
+    ],
+    "expected_backend_calls": [
+      {"name":"price_order","arguments":{"order_id":"ORDER-Beta-3","items":[{"item_id":"SKU-Red-01","quantity":2,"unit_price":19.5},{"item_id":"SKU-Blue-02","quantity":5,"unit_price":4.25}]}}
+    ]
+  },
+  {
+    "id": "nested-combined",
+    "prompt": "Schedule fulfillment for order ORDER-Gamma-9. Customer: id CUST-Gamma-4, vip true. Delivery address: street 88 Lambda Lane, city Boston, postal_code 02110, country US. Delivery window: start 2026-10-05T09:00:00Z, end 2026-10-05T12:00:00Z. Line item 1: item_id KIT-Core-7, quantity 3, unit_price 12.75, options gift_wrap false, priority 1, tags fragile and cold-chain. Line item 2: item_id KIT-Edge-2, quantity 1, unit_price 99.99, options gift_wrap true, priority 2, tags oversized and insured. Discover and use exactly one hidden schedule_fulfillment tool call, then finish with SENTINEL:NESTED-COMBINED.",
+    "expected_final_contains": "SENTINEL:NESTED-COMBINED",
+    "tools": [
+      {
+        "name": "schedule_fulfillment",
+        "description": "Schedule one fulfillment. Use order with customer, delivery, and line_items. Each line item has item_id, quantity, unit_price, options, and tags.",
+        "schema": {"type":"object","additionalProperties":false,"properties":{"order":{"type":"object","additionalProperties":false,"properties":{"order_id":{"type":"string"},"customer":{"type":"object","additionalProperties":false,"properties":{"id":{"type":"string"},"vip":{"type":"boolean"}},"required":["id","vip"]},"delivery":{"type":"object","additionalProperties":false,"properties":{"address":{"type":"object","additionalProperties":false,"properties":{"street":{"type":"string"},"city":{"type":"string"},"postal_code":{"type":"string"},"country":{"type":"string"}},"required":["street","city","postal_code","country"]},"window":{"type":"object","additionalProperties":false,"properties":{"start":{"type":"string"},"end":{"type":"string"}},"required":["start","end"]}},"required":["address","window"]},"line_items":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"item_id":{"type":"string"},"quantity":{"type":"integer"},"unit_price":{"type":"number"},"options":{"type":"object","additionalProperties":false,"properties":{"gift_wrap":{"type":"boolean"},"priority":{"type":"integer"}},"required":["gift_wrap","priority"]},"tags":{"type":"array","items":{"type":"string"}}},"required":["item_id","quantity","unit_price","options","tags"]}}},"required":["order_id","customer","delivery","line_items"]}},"required":["order"]},
+        "response": "fulfillment ORDER-Gamma-9 scheduled",
+        "expected_arguments": {"order":{"order_id":"ORDER-Gamma-9","customer":{"id":"CUST-Gamma-4","vip":true},"delivery":{"address":{"street":"88 Lambda Lane","city":"Boston","postal_code":"02110","country":"US"},"window":{"start":"2026-10-05T09:00:00Z","end":"2026-10-05T12:00:00Z"}},"line_items":[{"item_id":"KIT-Core-7","quantity":3,"unit_price":12.75,"options":{"gift_wrap":false,"priority":1},"tags":["fragile","cold-chain"]},{"item_id":"KIT-Edge-2","quantity":1,"unit_price":99.99,"options":{"gift_wrap":true,"priority":2},"tags":["oversized","insured"]}]}}
+      }
+    ],
+    "expected_backend_calls": [
+      {"name":"schedule_fulfillment","arguments":{"order":{"order_id":"ORDER-Gamma-9","customer":{"id":"CUST-Gamma-4","vip":true},"delivery":{"address":{"street":"88 Lambda Lane","city":"Boston","postal_code":"02110","country":"US"},"window":{"start":"2026-10-05T09:00:00Z","end":"2026-10-05T12:00:00Z"}},"line_items":[{"item_id":"KIT-Core-7","quantity":3,"unit_price":12.75,"options":{"gift_wrap":false,"priority":1},"tags":["fragile","cold-chain"]},{"item_id":"KIT-Edge-2","quantity":1,"unit_price":99.99,"options":{"gift_wrap":true,"priority":2},"tags":["oversized","insured"]}]}}}
+    ]
+  }
+]
