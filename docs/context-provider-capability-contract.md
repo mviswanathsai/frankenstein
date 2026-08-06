@@ -139,7 +139,7 @@ ContextInitializeRequest {
   id
   session_id?
 
-  runtime?
+  runtime
   workspace_roots: WorkspaceRoot[]
 
   refs?: ContextRef[]
@@ -157,7 +157,7 @@ The base contract names only facts we have a concrete need for:
 
 ```text
 RuntimeFacts {
-  cwd?
+  cwd
   current_date?
 }
 ```
@@ -170,7 +170,8 @@ for time-sensitive context.
 
 `workspace_roots` is the complete filesystem read boundary granted to the
 provider for this invocation. It is required but may be empty; an empty list
-grants no filesystem reads. The caller may add or remove roots on later calls.
+grants no filesystem reads other than what's in the cwd.
+The caller may add or remove roots on later calls.
 
 ```text
 WorkspaceRoot {
@@ -361,13 +362,12 @@ Base slots:
 ```text
 identity
 user_profile
-user_preferences
 project_instructions
-workspace_state
 session_fact
 memory
 skills
 tool_guidance
+unknown
 ```
 
 The same slot may appear in either layer:
