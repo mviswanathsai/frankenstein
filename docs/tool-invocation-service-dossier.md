@@ -644,6 +644,9 @@ contract reconciliation, not changes to the current draft by themselves.
   missed roughly 0.11 percent of prompt tokens. This does not erase the
   one-time cache disruption observed when direct loading replaced the callable
   tool bundle.
+- Steady-state cache-miss equivalence is uninformative by design because direct
+  loading's cost is the one-time provider tool-bundle replacement plus the
+  extra model round trip, not steady-state misses.
 - Local benchmarks showed modest proxy dispatch overhead for steady execution,
   while one-shot proxy execution was substantially cheaper than local
   load-plus-transition-plus-execution. These microbenchmarks do not represent
@@ -663,8 +666,9 @@ contract reconciliation, not changes to the current draft by themselves.
   never change the provider tool bundle, dispatch authority, validation, or
   runtime catalog adoption.
 - Tool Invocation owns canonical definitions and produces structured atomic
-  description evidence. An observability projection owns the ordered exposure
-  timeline and content-addressed exposure snapshots.
+  description evidence through `ToolResult.described_tool` on successful
+  `tool_describe` results. An observability projection owns the ordered
+  exposure timeline and content-addressed exposure snapshots.
 - The non-normative implementation plan is
   `docs/tool-exposure-catalog-plan.md`. Exact event references are deliberately
   deferred until the eventing primitives are designed.

@@ -73,6 +73,7 @@ type BackendResult struct {
 	SideEffect    ToolSideEffect
 	StopRequested bool
 	Failure       *ToolFailure
+	DescribedTool *ToolDefinition
 }
 
 type BackendFunc func(context.Context, BackendRequest) BackendResult
@@ -517,8 +518,9 @@ func (s *Service) toolDescribe(_ context.Context, req BackendRequest) BackendRes
 		}
 	}
 	return BackendResult{
-		Text:       fmt.Sprintf("name: %s\ndescription: %s\ninput_schema: %s", tool.def.Name, tool.def.Description, string(tool.def.InputSchema)),
-		SideEffect: SideEffectNone,
+		Text:          fmt.Sprintf("name: %s\ndescription: %s\ninput_schema: %s", tool.def.Name, tool.def.Description, string(tool.def.InputSchema)),
+		SideEffect:    SideEffectNone,
+		DescribedTool: cloneDefinitionPtr(tool.def),
 	}
 }
 
@@ -765,6 +767,12 @@ func normalizeBackendResult(call ToolCall, tool *registeredTool, result BackendR
 	if status == ResultSucceeded && result.Failure != nil {
 		return malformedBackendResult(call, tool, result, sideEffect, "successful backend result included a failure")
 	}
+	if result.DescribedTool != nil && tool.def.Name != "tool_describe" {
+		return malformedBackendResult(call, tool, result, sideEffect, "backend returned unauthorized tool description evidence")
+	}
+	if result.DescribedTool != nil && status != ResultSucceeded {
+		return malformedBackendResult(call, tool, result, sideEffect, "non-successful backend result included tool description evidence")
+	}
 	if result.Failure != nil && strings.TrimSpace(result.Failure.Code) == "" {
 		return malformedBackendResult(call, tool, result, sideEffect, "backend failure code is empty")
 	}
@@ -779,6 +787,10 @@ func normalizeBackendResult(call ToolCall, tool *registeredTool, result BackendR
 		SideEffect:    sideEffect,
 		StopRequested: result.StopRequested,
 		Failure:       result.Failure,
+	}
+	if result.DescribedTool != nil {
+		described := cloneDefinition(*result.DescribedTool)
+		out.DescribedTool = &described
 	}
 	if out.Refs == nil {
 		out.Refs = []session.ContextRef{}
@@ -1125,14 +1137,67 @@ func definitionRevision(def ToolDefinition) string {
 	return stableID("tooldef", canonical)
 }
 
+func DefinitionRevision(def ToolDefinition) (string, error) {
+	_, canonicalSchema, err := compileSchema(def.InputSchema)
+	if err != nil {
+		return "", err
+	}
+	def.InputSchema = canonicalSchema
+	return definitionRevision(def), nil
+}
+
 func catalogID(defs []ToolDefinition) string {
 	canonical, _ := canonicalJSON(defs)
 	return stableID("toolcat", canonical)
 }
 
+func CanonicalDefinition(def ToolDefinition) (ToolDefinition, error) {
+	if strings.TrimSpace(def.ID) == "" {
+		return ToolDefinition{}, errors.New("tool definition id is required")
+	}
+	if strings.TrimSpace(def.Name) == "" {
+		return ToolDefinition{}, fmt.Errorf("tool definition %q name is required", def.ID)
+	}
+	if strings.TrimSpace(def.Description) == "" {
+		return ToolDefinition{}, fmt.Errorf("tool definition %q description is required", def.ID)
+	}
+	if len(def.InputSchema) == 0 {
+		return ToolDefinition{}, fmt.Errorf("tool definition %q input_schema is required", def.ID)
+	}
+	_, canonicalSchema, err := compileSchema(def.InputSchema)
+	if err != nil {
+		return ToolDefinition{}, fmt.Errorf("tool definition %q input_schema is invalid: %w", def.ID, err)
+	}
+	def.InputSchema = canonicalSchema
+	want, err := DefinitionRevision(def)
+	if err != nil {
+		return ToolDefinition{}, err
+	}
+	if def.Revision != want {
+		return ToolDefinition{}, fmt.Errorf("tool definition %q revision does not match contents", def.ID)
+	}
+	return cloneDefinition(def), nil
+}
+
+func CatalogID(defs []ToolDefinition) (string, error) {
+	canonical := make([]ToolDefinition, len(defs))
+	for i, def := range defs {
+		definition, err := CanonicalDefinition(def)
+		if err != nil {
+			return "", err
+		}
+		canonical[i] = definition
+	}
+	return catalogID(canonical), nil
+}
+
 func stableID(prefix string, raw []byte) string {
 	sum := sha256.Sum256(raw)
 	return prefix + "_" + hex.EncodeToString(sum[:])
+}
+
+func StableID(prefix string, raw []byte) string {
+	return stableID(prefix, raw)
 }
 
 func fingerprint(value any) (string, error) {
@@ -1174,6 +1239,11 @@ func decodeJSON(raw []byte, out any) error {
 func cloneDefinition(def ToolDefinition) ToolDefinition {
 	def.InputSchema = append(json.RawMessage(nil), def.InputSchema...)
 	return def
+}
+
+func cloneDefinitionPtr(def ToolDefinition) *ToolDefinition {
+	out := cloneDefinition(def)
+	return &out
 }
 
 func cloneCatalog(catalog ToolCatalog) ToolCatalog {
