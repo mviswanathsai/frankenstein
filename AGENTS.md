@@ -1,15 +1,142 @@
 # Frankenstein
 
-Working title: Frankenstein. The name is provisional.
+Working title. Provisional, like the thesis.
 
-This project is an attempt to formalize the capability boundaries of agentic
-harnesses. The goal is not to produce another monolithic agent. The goal is to
-define a modular, composable harness model where major agent capabilities can be
-swapped, studied, implemented, and recombined independently.
+Frankenstein is a harness built on a hypothesis about autonomously
+self-improving agents: an agent can improve the system that runs it. For that
+to be possible, the harness must give the agent three things — a clean, boring,
+API-shaped internal surface; a first-class record of its own behavior; and a
+target to optimize against. Modularity makes all three tractable, but it is an
+enabler, not a fourth pillar.
 
-The first implementation can be simple. The important work is the taste with
-which the contract boundaries are chosen and the thoroughness with which those
-contracts are expressed.
+The thesis and the name are both provisional. How the thesis got here is
+recorded in `docs/trajectory.md`.
+
+## The Thesis
+
+An agent is self-improving when it can improve the harness that runs it.
+
+Self-improvement is not primarily a model property. It is a harness property.
+The same model is self-improving or not depending on whether the system around
+it gives it:
+
+1. a surface it can patch, and a definition of what "correct" means for a patch
+2. a record of how it is actually used and how it performs
+3. a target to optimize against
+
+None of these make the model cleverer. They make the harness legible to the
+model that runs inside it.
+
+### The Three Pillars And One Enabler
+
+#### Pillar 1: Clean, Boring Internal Interfaces
+
+The harness's internal surface must be designed as an API. When the model
+patches something, it must be able to answer three questions: what to update,
+how to update it, and what "correct" looks like after the update.
+
+Boring is deliberate. A self-modifying system cannot reason about a clever
+interface. Boring means small, documented, predictable, and free of hidden
+magic. A capability contract — commands, terminal events, invariants, failure
+semantics — is the unit of "correct" the model checks its edits against.
+
+The capability-contract work is the concrete expression of this pillar.
+
+#### Pillar 2: Observability As A First-Class Guarantee
+
+The model can only update itself effectively if it can see how it is being
+used and how it performs. Observability is a guarantee, not a bolt-on. Every
+command has a recorded terminal event; every accepted output is a canonical
+event payload. The event log is the semantic record of the harness, and replay
+is how the harness explains itself. The record that helps a human debug a
+failure is the same record the model reads before it changes anything.
+
+The commitment includes being able to answer: what the model saw, what it
+emitted, what was rejected and why, what tool ran and what changed state, why
+recovery or fallback happened, and what compression or memory transform
+occurred.
+
+#### Pillar 3: A Target To Optimize Against
+
+Once the model can see and change its own harness, the decisive question is:
+what does it optimize for?
+
+This is where the moat is expected to move. Clean interfaces and observability
+are necessary, but they are table stakes. The target is not. The project does
+not yet have an answer for what the target should be, and it does not pretend
+otherwise.
+
+The harness should treat the target as a pluggable decision — an objective or
+evaluation surface that the rest of the system treats as a slot, the same way
+it treats capabilities as slots. The contracts and the event log make any target
+testable. The open question is which target is worth optimizing for.
+
+#### The Enabler: Modularity
+
+Modularity is not a fourth pillar. It is what makes the other three actionable.
+
+A modular architecture lets the harness update itself, benchmark itself, and
+experiment with itself far more easily than a single block of code. The
+capability/service split is the unit of modularity. Primary/shadow and parallel
+service evaluation turn modularity into an experiment surface: the same
+session, the same commands, multiple service implementations, one committed
+path, and replayable comparison.
+
+### The Self-Improvement Loop
+
+The pillars compose into a loop:
+
+1. The model reads the contracts to learn what exists, what each boundary owns,
+   and what "correct" means for an edit.
+2. The model reads its own event log to learn how it is being used and how it
+   performs.
+3. The model proposes an edit to a service or contract against an explicit
+   target.
+4. The harness evaluates the edit against that target, with the event log as
+   replayable evidence.
+5. Accepted edits are committed. Rejected edits leave the harness unchanged.
+
+The loop is the destination, not a shortcut. The project builds the pillars
+first and treats autonomous self-improvement as the payoff only after the
+pillars are real.
+
+### Where The Project Is Now
+
+Pillar 1 is the current center of gravity. A Hermes census exists and three
+contracts are drafted: session, context provider, tool invocation. Pillar 2's
+commitments are stated above; the event model is not yet its own contract.
+Pillar 3 is open. The status of every track, and the next steps, live in
+`docs/project-status.md`.
+
+## Working With Viswa
+
+This project is a conversation with Viswa, not a service. These preferences
+apply to every agent persona in this repo.
+
+- Write plainly. No jargon-dense sentences and no walls of abbreviations. Say
+  things the way a good engineer would say them to a colleague.
+- Keep tables small. If a table needs more than three columns or three rows, it
+  should probably be a list or prose.
+- Treat Viswa as a technical peer. Explain your reasoning, push back when you
+  disagree, propose alternatives. Aim to reach a conclusion together, not to
+  deliver a lecture.
+- Do not over-engineer. Prefer the smallest useful change that matches the
+  project's contract taste.
+- Ask before taking large speculative action. When ambiguity would change what
+  gets built, stop and ask.
+- Commit only when explicitly asked.
+
+Two personas live in `.opencode/agents/`. They share everything in this file;
+the persona files add role-specific behavior.
+
+- `collaborator` (the default) — a technical peer for architecture and design.
+  Big-picture, deep tradeoffs, reaching conclusions.
+- `executor` — takes a decided prompt and does the work. Stops and asks on
+  discrepancies, does not make architectural calls, does not commit unless
+  asked.
+
+When a direction is agreed in a collaborator session, hand the work to the
+executor with a crisp, self-contained prompt.
 
 ## Contract Work Skill
 
@@ -24,637 +151,36 @@ another shape `<subject>_id`, such as `session_id`, `request_id`, or
 
 ## Vocabulary
 
-Use these terms consistently.
-
-### Capability
-
-A capability is a replaceable harness surface with a stable contract. It is the
-thing the harness knows how to depend on.
-
-Capabilities are drawn around meaningful agent behavior, not file layout. A
-capability should describe a user-visible and runtime-relevant job such as
-memory, context construction, model invocation, tool invocation, compression,
-session experience, recovery, observability, or UI/gateway interaction.
-
-A capability is not a Python module, helper function, process, plugin, provider,
-or microservice. Those may implement a capability, but they are not the
-capability itself.
-
-### Contract
-
-A contract is the typed boundary for a capability.
-
-A capability contract defines externally observable obligations, not the
-internal steps used to satisfy them. It says what a service must look like from
-the outside: commands accepted, events emitted, state promises, side effects,
-failure semantics, replay behavior, and invariants. It does not prescribe which
-internal policies, helper objects, strategies, architecture, language, or
-backend a service uses.
-
-It defines the stable cross-boundary surface:
-
-- supported actions
-- required and optional metadata
-- command payload schemas
-- output payload schemas
-- emitted events, including terminal events
-- state ownership expectations
-- side effects allowed
-- model-facing tools, if any
-- invariants
-- failure, retry, and replay semantics
-- security and capability boundaries
-- test fixtures
-
-The core contract shape is a command envelope:
-
-```text
-CommandEnvelope = action + metadata + payload + causality refs
-```
-
-The output schema of an action is the payload schema of its terminal event. In a
-direct-call implementation, the mediator may return that terminal event
-synchronously as a convenience, but the event payload is the canonical recorded
-output.
-
-### Service
-
-A service is a concrete implementation of one or more capability contracts.
-
-A service may be in-process code, a local subprocess, a library adapter, a
-remote API, a plugin, or a shadow/eval implementation. A service may implement
-multiple whole capabilities, and multiple services may implement the same
-capability at the same time.
-
-A service implements capability contracts in wholes, not arbitrary slices. If an
-implementer wants to change one internal choice inside a capability, that can be
-a new service implementing the same whole capability contract. The service may
-reuse code, delegate internally, or compose private strategies however it wants,
-but the harness configuration should select coherent capability implementations
-rather than wire every internal decision.
-
-The important rule:
-
-> Capability is the stable contract-shaped slot in the harness; service is the
-> swappable implementation that fills that slot.
-
-### Mediator
-
-The mediator is the harness library/runtime layer that standardizes
-cross-capability mechanics. It should own envelopes, service routing, validation,
-IDs, ordering, primary/shadow mode, event append, and replay hooks.
-
-The mediator should not own capability semantics. Services implement capability
-semantics. The runtime/control flow decides when capabilities are invoked.
-
-The first implementation should prefer direct function-like mediator calls over
-an event bus:
-
-```text
-runtime -> mediator.invoke(command) -> service
-service -> terminal event/output -> mediator event log
-```
-
-Events are the canonical semantic record. Direct calls are the initial execution
-strategy.
-
-### Model-Facing Tools
-
-Some capabilities publish tools to the model. Those tools are part of the
-capability contract when the model is expected to call them, but tools are not
-the whole capability.
-
-For example, a memory capability may have harness-enforced actions such as
-`observe` and `recall_for_context`, while also publishing model-facing tools
-such as `memory_search`, `memory_save`, `memory_forget`, or `memory_profile`.
-The tool router exposes and routes those tools at runtime.
-
-## Core Vision
-
-Modern agent harnesses already contain a set of recurring capability areas:
-
-- runtime loop
-- model adapters
-- context construction
-- session and history management
-- memory
-- compression
-- tool routing
-- tool execution
-- policy and permissions
-- error recovery
-- fallback routing
-- observability
-- UI and gateway surfaces
-
-Projects like Hermes are valuable because they expose the real-world mess:
-malformed tool calls, provider-specific replay metadata, huge prompts, long
-session degradation, blocking memory extraction, context overflow, local model
-cache invalidation, tool-result bloat, and brittle recovery paths.
-
-The idea here is to take those learnings and apply them differently. Instead of
-one large organism where every behavior is entangled, we want a framework where
-an agentic harness can be composed from well-defined capabilities and services.
-
-In the long run, a harness should be constructible from a small declarative file
-that says which services fill which capabilities. The engine should pull those
-services together behind the scenes and produce the requested harness.
-
-This could be especially useful for hackathons, experiments, research, and
-personal agent systems where people want to combine ideas quickly:
-
-- use one system's memory engine
-- use another system's context packer
-- use a different session model
-- use a strict tool router
-- use a Python provider adapter
-- use a Go runtime kernel
-- use a Rust tokenizer or search index
-
-The project is not anti-Python. Python remains excellent for fast-moving LLM
-APIs, model adapters, memory extraction, plugins, and tool ecosystems. The
-broader idea is that each service should be allowed to use the language and
-runtime best suited to its job.
-
-## Central Hypothesis
-
-Agent harness development can be broken into meaningful substreams if the
-contracts between capabilities are formalized well enough.
-
-The useful artifact is not only a reference implementation. The useful artifact
-is a capability/service model:
-
-- what capabilities exist
-- what each capability owns
-- how capabilities communicate through commands and events
-- what can be swapped
-- what invariants must hold
-- what failures must be represented
-- what user-facing behavior each contract enables
-
-If the boundaries are right, services can go wild inside those boundaries.
-
-### Potentially Useful Side Effect: Parallel Implementations
-
-A useful side effect of capability-level contracts is that one capability name
-does not have to resolve to exactly one service. A harness can run several
-services implementing the same capability at the same time, with the mediator or
-runtime logistics deciding which service is primary and which services are
-shadow, comparison-only, or disabled.
-
-For example, `memory` could have one service that commits live state
-while two others receive the same command envelopes and write only isolated
-evaluation artifacts. The live harness still has one committed behavior, but the
-event log captures comparable outputs from multiple services on the same
-real turns.
-
-This is potentially valuable for end-to-end evals: same session, same inputs,
-same semantic commands, multiple services, one committed path, and replayable
-comparison. It should remain a routing and logistics choice, not something every
-service has to know about.
-
-## Important Design Taste
-
-Do not start by inventing ideal contracts.
-
-Start from real implementations. Study what exists, where it lives, what it
-does, what state it mutates, and what failures it handles. Then work upward
-toward user-facing capabilities.
-
-Important local sources:
-
-- `/home/mviswanathsai/hermes-agent`
-- `/home/mviswanathsai/pi`
-- `/home/mviswanathsai/awesome-harness-engineering`
-- `/home/mviswanathsai/agent-client-protocol`
-
-The contract surface is not purely an under-the-hood implementation question.
-It is also a user-facing and harness-author-facing question.
-
-The right question is not only:
-
-> Can this be separated technically?
-
-The better question is:
-
-> Would someone plausibly want to swap this set of responsibilities for a
-> different philosophy?
-
-A capability deserves a contract when it represents a meaningful replaceable
-agent behavior, not merely an implementation convenience.
-
-For example, Hermes may spread "session logic" across persistence, compression,
-prompt assembly, memory, search, replay cleanup, title generation, and UI
-commands. Internally those may be many pieces. From the user's perspective,
-they may form one larger replaceable capability:
-
-> how the harness remembers, resumes, branches, compacts, searches, and presents
-> prior work.
-
-That larger capability is a better contract candidate than each internal helper.
-
-## Boundary Rule
-
-Draw contracts around useful logical chunks.
-
-A capability is contract-worthy when:
-
-- swapping it changes the kind of harness being built
-- multiple plausible implementations exist
-- users or researchers may care about the tradeoff
-- the boundary can be kept stable enough to document
-- the rest of the system can treat it as a black box
-- the contract captures real failure modes, not just happy paths
-
-A capability is probably not contract-worthy when:
-
-- it is just a helper function
-- it has no meaningful alternate philosophy
-- nobody would swap it independently
-- it only exists because of one implementation's file layout
-- separating it would create ceremony without leverage
-
-The phrase to keep in mind:
-
-> Contracts should be drawn around replaceable agent capabilities, not around
-> implementation conveniences.
-
-The cost of swapping a small internal policy is writing or selecting a new
-service that implements the whole capability contract. That cost is intentional:
-it protects capability boundaries from dissolving into arbitrary plumbing while
-still allowing implementation strategies to vary freely behind the contract.
-
-## Methodology
-
-Work in this order. Mark the status to completed when that task is completed.
-
-### 1. Hermes Census
-
-Map what exists without designing the new system yet.
-
-For each relevant Hermes module or cluster:
-
-- file or module
-- observed responsibility
-- state owned or mutated
-- inputs
-- outputs
-- external side effects
-- related modules
-- user-visible behavior affected
-- failure cases handled
-- hidden coupling
-
-The goal is descriptive accuracy.
-
-Status: pending
-
-### 2. Capability Clustering
-
-Group scattered implementation pieces into larger capabilities.
-
-For each capability:
-
-- user-visible job
-- runtime job
-- Hermes files involved
-- state involved
-- adjacent capabilities
-- where responsibilities blur
-- what the capability must preserve if replaced
-
-One Hermes file may contribute to many capabilities. One capability may span
-many Hermes files.
-
-Status: pending
-
-### 3. Substitution Test
-
-Ask whether each capability deserves a contract.
-
-Questions:
-
-- Would someone want to swap this out?
-- Would swapping it change the harness philosophy?
-- Are there multiple plausible implementations?
-- Is this a user-visible choice?
-- Can the interface be small enough?
-- Does the contract need to span multiple internal modules?
-
-This step prevents over-contracting tiny internals.
-
-Status: pending
-
-### 4. Contract Draft
-
-Only after the census and substitution test, draft the contract.
-
-Each contract should eventually define:
-
-- purpose
-- owned state
-- commands
-- events, including terminal events
-- inputs
-- output payloads
-- invariants
-- failure semantics
-- lifecycle
-- concurrency expectations
-- persistence expectations
-- security and capability boundaries
-- replay behavior
-- test fixtures
-
-Avoid fake elegance, and don't force elegance now. Contracts must survive real agent behavior.
-
-Status: pending
-
-### 5. Control Flow
-
-After the contracts are understood, define the harness control flow:
-
-- turn start
-- context materialization
-- model invocation
-- stream handling
-- tool-call validation
-- tool execution
-- recovery
-- memory and compression side effects
-- finalization
-- persistence
-- background jobs
-
-The control flow should be event-aware, but not necessarily distributed.
-
-Status: pending
-
-## Semantic Events Vs Transport
-
-This project is event-driven in the semantic sense.
-
-That does not mean every event must immediately cross a network boundary, or
-that the first implementation should use an event bus for control flow.
-
-Prefer direct mediator invocations first. The mediator can call a service like a
-function, receive the terminal event/output, and append the same event to the
-log. The event is the canonical semantic record; the direct return is an
-execution convenience.
-
-An event can begin as an in-process append-only record. Later, the same semantic
-event can travel over stdio, gRPC, Connect, NATS, SQLite polling, or some other
-transport.
-
-Separate the event model from the transport implementation.
-
-Do not introduce transport overhead before the contracts justify it.
-
-## Initial Capability Areas
-
-These are candidate capability areas to investigate. They are not final
-contracts.
-
-### Runtime Kernel
-
-The runtime kernel owns global coherence:
-
-- turn lifecycle
-- message and event ordering
-- retry and fallback policy
-- tool-call validation before execution
-- budget enforcement
-- cancellation and timeouts
-- durable persistence
-- recovery coordination
-- replay invariants
-
-This is a strong candidate for a small, strict core.
-
-### Session Experience
-
-This is not just storage. It includes how prior work is remembered and
-materialized.
-
-Possible implementations:
-
-- flat transcript
-- tree sessions with branches
-- append-only event log
-- DAG with shared prefixes
-- ephemeral eval sessions
-- privacy-minimized sessions
-- collaborative sessions
-
-Important distinction:
-
-Session storage and context materialization are related but not the same thing.
-
-### Context Construction
-
-Context construction decides what the model sees.
-
-It may include:
-
-- system prompt assembly
-- stable/context/volatile prompt partitioning
-- project instructions
-- memory injection
-- tool schema inclusion
-- token budgeting
-- prompt caching strategy
-- transcript compression
-- branch-aware materialization
-
-This is one of the most important research surfaces.
-
-### Memory
-
-Memory may be:
-
-- disabled
-- explicit user notes
-- automatic behavioral memory
-- project-local memory
-- semantic memory
-- graph memory
-- episodic memory
-- external memory provider
-
-Memory extraction should often be background, best-effort, and non-blocking.
-
-### Tool Invocation
-
-Tool invocation includes:
-
-- tool schema publication
-- tool name validation
-- argument validation
-- repair or rejection policy
-- approval policy
-- sandboxing
-- timeout handling
-- result shaping
-- artifact capture
-- capability scoping
-
-This is a major contract candidate because different harnesses may want very
-different safety and autonomy tradeoffs.
-
-### Model Adapter
-
-Model adapters normalize provider-specific APIs.
-
-They must handle:
-
-- streaming
-- tool-call formats
-- reasoning metadata
-- provider-specific replay fields
-- rate limits
-- content filters
-- malformed provider responses
-- fallback compatibility
-
-The core should preserve provider-specific metadata without letting it infect
-unrelated capabilities.
-
-### Compression
-
-Compression is not just "summarize old chat."
-
-It affects:
-
-- replay correctness
-- tool-call invariants
-- memory provenance
-- prompt cache stability
-- user trust
-- long-session usability
-
-Compression should have provenance and should be treated as a state transform,
-not an invisible mutation.
-
-### Observability And Replay
-
-Agent systems need replay because failures are often emergent.
-
-The event log should make it possible to answer:
-
-- what did the model see?
-- what did it emit?
-- what was rejected?
-- what tool ran?
-- what changed state?
-- why did fallback happen?
-- what compression or memory transform occurred?
-
-Observability should support debugging, evals, and research.
-
-## Language Philosophy
-
-Languages should play to their strengths.
-
-Possible allocation:
-
-- Go: runtime kernel, gateway, scheduler, persistence, cancellation, budgets
-- Python: provider adapters, LLM-heavy transforms, memory extraction, rich tools
-- Rust: tokenization, search, indexing, patch parsing, sandbox-sensitive helpers
-- TypeScript: UI, browser automation, interactive inspectors
-
-This is not a rule. It is a starting point.
-
-The important point is that the capability contract should be independent of the
-implementation language.
-
-## Non-Goals
-
-Do not make this a Hermes rewrite.
-
-Do not start with microservices.
-
-Do not split every helper into a capability or service.
-
-Do not make the harness configuration a wiring diagram of every internal step
-inside a capability.
-
-Do not make event transport the first problem.
-
-Do not assume the first implementation proves the contracts are complete.
-
-Do not optimize for mass adoption at the expense of research clarity.
-
-Do not remove Python from the ecosystem for ideological reasons.
-
-Do not confuse a clean implementation with a correct boundary.
-
-## Reference Implementations To Study
-
-Hermes is the primary case study because it contains many real-world agent
-runtime lessons.
-
-Local source directories:
-
-- `/home/mviswanathsai/hermes-agent`
-- `/home/mviswanathsai/pi`
-- `/home/mviswanathsai/awesome-harness-engineering`
-- `/home/mviswanathsai/agent-client-protocol`
-
-Other useful references may include:
-
-- Pi, for minimalism, self-extensibility, and branchable sessions
-- Claude Code style project instruction files
-- Codex-style repo guidance through AGENTS.md
-- OpenAI/Anthropic/Codex provider behavior
-- local model harnesses and prompt-cache behavior
-- MCP-style tool boundaries
-
-The point is not to copy any one harness. The point is to extract capability
-boundaries from real systems.
-
-## Immediate Next Steps
-
-Start with a Hermes implementation census.
-
-Suggested first pass:
-
-1. Runtime loop and turn lifecycle
-2. System prompt and context construction
-3. Tool registry and tool execution
-4. Provider normalization and model adapters
-5. Session persistence and replay
-6. Compression and long-session handling
-7. Memory extraction and memory injection
-8. Recovery, fallback, and error classification
-9. UI/gateway interaction
-10. Observability, traces, and eval surfaces
-
-For each, produce a dossier with this shape:
-
-```text
-Capability:
-User-visible job:
-Runtime job:
-Hermes files involved:
-State owned or mutated:
-Inputs:
-Outputs:
-External effects:
-Failure modes:
-Recovery behavior:
-Hidden coupling:
-Possible alternate philosophies:
-Contract-worthy? yes/no/maybe:
-Reason:
-```
-
-Only after these dossiers exist should the project draft formal contracts.
-
-## Working Principle For Future Agents
-
-When working on this project, do not rush into implementation.
-
-Prefer:
+Terms used consistently across the project. The contracts and dossiers carry the
+detail; these are the load-bearing meanings.
+
+- **Capability** — a replaceable harness surface with a stable contract. A
+  user-visible and runtime-relevant job such as memory, context construction,
+  model invocation, tool invocation, session experience, compression, or
+  observability. Not a module, helper function, process, plugin, or
+  microservice.
+- **Contract** — the typed boundary of a capability. Commands, events, state
+  promises, side effects, failure semantics, replay behavior, and invariants. A
+  contract says what a service must look like from the outside, never how it
+  works inside. Core shape: `CommandEnvelope = action + metadata + payload +
+  causality refs`. The output of an action is the payload of its terminal
+  event; in a direct-call implementation the mediator may return that event
+  synchronously as a convenience.
+- **Service** — a concrete implementation of one or more whole capability
+  contracts. A service implements contracts in wholes, not slices. Multiple
+  services may implement the same capability at the same time (primary, shadow,
+  comparison).
+- **Mediator** — the harness layer that standardizes cross-capability
+  mechanics: envelopes, routing, validation, IDs, ordering, primary/shadow
+  mode, event append, replay hooks. The mediator does not own capability
+  semantics.
+- **Model-facing tools** — tools a capability publishes for the model to call.
+  They are part of the capability contract when the model is expected to call
+  them, but tools are never the whole capability.
+
+## Working Principle
+
+Do not rush into implementation. Work in this order:
 
 1. observe concrete harness behavior
 2. identify capability clusters
@@ -663,17 +189,75 @@ Prefer:
 5. then implement a reference version
 
 Implementation is allowed, but the project lives or dies by contract taste.
+Contract taste now serves the self-improvement thesis: the question is not only
+whether a boundary is clean, but whether a model can read it, verify it, and
+patch it — and whether the harness can see the result of the patch.
 
-## Agent skills
+Start from real implementations, not ideal contracts. The right question about a
+boundary is not "can this be separated technically?" but "would someone
+plausibly want to swap this responsibility for a different philosophy?"
 
-### Issue tracker
+Draw contracts around replaceable agent capabilities, not implementation
+conveniences. A capability is contract-worthy when swapping it changes the kind
+of harness being built, multiple plausible implementations exist, users or
+researchers care about the tradeoff, and the rest of the system can treat it as
+a black box. A helper function is not a capability. The cost of swapping a small
+internal policy is writing a new service that implements the whole contract;
+that cost is intentional.
 
-Issues and PRDs are tracked in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
+## Design Stances
 
-### Triage labels
+- Events are the semantic record; transport is an implementation detail. The
+  first implementation uses direct mediator calls and appends the terminal
+  event to an in-process append-only log. Do not add an event bus before a
+  contract justifies it. The semantic event log is also the pillar-2 surface:
+  the same append-only record that makes replay possible is what the model
+  reads to see its own behavior.
+- Parallel implementations are a routing and logistics choice, not something
+  every service knows about. One capability may be filled by several services:
+  the primary commits live state, shadows write isolated evaluation artifacts.
+  This is the modularity the self-improvement loop relies on.
+- Languages play to their strengths. Go for runtime, gateway, persistence,
+  cancellation, budgets; Python for provider adapters, memory extraction, rich
+  tools; Rust for tokenization, search, indexing; TypeScript for UI. The
+  capability contract is independent of the implementation language. The
+  project is not anti-Python.
 
-The default five-role triage vocabulary is used. See `docs/agents/triage-labels.md`.
+## Non-Goals
 
-### Domain docs
+- Not a Hermes rewrite, and not microservices from day one. Do not split every
+  helper into a capability or service, and do not let event transport become
+  the first problem.
+- Do not confuse a clean implementation with a correct boundary.
+- Do not chase autonomous self-improvement before the three pillars are real.
+  The loop is the destination, not a shortcut around contract and observability
+  work.
+- Do not treat "the model can edit code" as "the harness is self-improving".
+  Editing code is only the last step; the interface, the observability, and the
+  target are what make an edit meaningful.
+- Do not let the optimization target remain an unexamined default. The target
+  is a pillar even while it is undefined.
 
-This repository uses a single-context domain-documentation layout. See `docs/agents/domain.md`.
+## Where Things Live
+
+- Thesis trajectory: `docs/trajectory.md`
+- Project status and next steps: `docs/project-status.md`. Update it whenever
+  you complete, start, or change a tracked item — a methodology step, a
+  contract version, a next step, or a capability area moving into active work.
+- Hermes census: `docs/hermes-architecture-census.md`
+- Contracts: `docs/session-capability-contract.md` (`session.v0.2`),
+  `docs/context-provider-capability-contract.md` (`context_provider.v0.1`),
+  `docs/tool-invocation-capability-contract.md` (`tool_invocation.v0`)
+- Service dossiers: `docs/session-service-dossier.md`,
+  `docs/context-provider-service-dossier.md`,
+  `docs/tool-invocation-service-dossier.md`
+- Reference implementations: Hermes at `/home/mviswanathsai/hermes-agent`, Pi
+  at `/home/mviswanathsai/pi`, Darwin Gödel Machine at
+  `/home/mviswanathsai/dgm` (see `learning-records/0002-dgm-lessons.md`). The
+  self-improvement literature is tracked in `RESOURCES.md`.
+
+## Agent Skills
+
+- Issue tracker: issues and PRDs live in GitHub Issues. See `docs/agents/issue-tracker.md`.
+- Triage labels: the default five-role triage vocabulary. See `docs/agents/triage-labels.md`.
+- Domain docs: this repo uses a single-context domain-documentation layout. See `docs/agents/domain.md`.
