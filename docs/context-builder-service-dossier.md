@@ -500,6 +500,16 @@ contract reconciliation, not changes to the current draft by themselves.
   reordering trivial if empirical evidence later shows it matters for
   a specific model or task.
 
+- **Normalization notes are event-level metadata, not inline text.** A
+  separate `normalization` output on `prepare` carries structured notes
+  describing what the builder did to the transcript — messages dropped,
+  synthesized, truncated, or merged — with tightly bound reasons
+  (`missing_tool_result`, `incomplete_reasoning`, `mid_stream_abort`,
+  `orphaned_tool_result`, `role_alternation`, `empty_turn`). Messages stay
+  clean. The adapter reads notes to decide per-provider handling; the model
+  reads notes for observability. This doubles as the normalization
+  observability surface — every transform is recorded.
+
 ### Implementation Notes
 
 - Go for v0 implementation, consistent with the `model_invocation` language

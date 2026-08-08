@@ -297,25 +297,47 @@ budget.
 Successful terminal output:
 
 ```text
-ModelInput {
-  system?
-  messages: ModelMessage[]
+BuiltContext {
+  input: ModelInput
+  normalization: NormalizationNote[]
 }
 ```
 
-`system` is the `BuiltPrefix.system_prompt`, echoed verbatim. It is
-present when the prefix was assembled with a system prompt. It may be
-absent when the builder has no system prompt to emit (a future
-no-system-prompt configuration).
+`input` is the assembled `ModelInput` ready for Model Invocation. `system`
+is the `BuiltPrefix.system_prompt`, echoed verbatim. `messages` is the
+normalized transcript.
 
-`messages` is required and must be non-empty. It is the normalized
-transcript. The builder owns the normalization policy — what counts as an
-errored turn, how missing tool results are synthesized, what internal
-markers are dropped — and must produce messages whose role sequence is
-valid for the selected provider. The normalization is provider-agnostic;
-provider-specific constraints (message ordering, tool result format)
-enforced by Model Invocation's adapter are the builder's responsibility to
-satisfy.
+`normalization` records every structural change the builder made to the
+transcript. Each note describes one transform:
+
+```text
+NormalizationNote {
+  transcript_index
+  action
+  reason
+  synthesized_text?
+}
+```
+
+`transcript_index` is the zero-based position in the original transcript
+where this transform applies.
+
+`action` is what the builder did: `dropped` (message removed), `synthesized`
+(builder created a new message), `truncated` (message kept but content is
+structurally incomplete), or `merged` (two or more transcript messages
+combined into one output message).
+
+`reason` is why: `missing_tool_result`, `incomplete_reasoning`,
+`mid_stream_abort`, `orphaned_tool_result`, `role_alternation`, or
+`empty_turn`.
+
+`synthesized_text` is present only when `action` is `synthesized`. It
+carries the text the builder wrote for the message not present in the
+original transcript.
+
+The notes are event-level metadata. `ModelInput.messages` carry clean
+content. Adapters read the notes to decide per-provider handling; the model
+reads them for observability. Every transform is recorded.
 
 Terminal events:
 
