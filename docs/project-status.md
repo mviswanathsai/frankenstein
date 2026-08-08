@@ -25,7 +25,7 @@ means.
    drafted dossiers.
 3. Substitution test — partial. The dossiers record contract-worthy judgments.
    The remaining capability areas need the same treatment.
-4. Contract draft — partial. Four contracts drafted, listed below.
+4. Contract draft — partial. Five contracts drafted, listed below.
 5. Control flow — pending. A development scaffold exists in the census; the
    formal control flow depends on the runtime-kernel contract.
 
@@ -39,6 +39,9 @@ means.
 - model invocation — `model_invocation.v0` —
   `docs/model-invocation-capability-contract.md` (dossier at
   `docs/model-invocation-service-dossier.md`)
+- context builder — `context_builder.v0` —
+  `docs/context-builder-capability-contract.md` (dossier at
+  `docs/context-builder-service-dossier.md`)
 
 Not yet drafted: runtime kernel, memory, compression, and the observability
 event model.
@@ -52,19 +55,22 @@ Work in this order. Move each item forward as it lands.
    interrupt behavior in `chat_completion_helpers.py`, plugin hooks, approval
    and checkpoint policy, gateway delivery constraints, memory providers, and
    eval/cron paths.
-2. Draft the runtime-kernel contract — the coherence point the other contracts
+2. Context builder (`context_builder.v0`) is drafted and in active contract
+   work alongside model invocation. Open questions remain: artifact store
+   integration, token estimation policy, and per-provider build variations.
+3. Draft the runtime-kernel contract — the coherence point the other contracts
    reach into: turn lifecycle, ordering, budgets, cancellation, recovery, and
    replay invariants. The runtime kernel is the next capability in active
    work: its dossier material is captured in the model-invocation dossier
    ("Adjacent: Runtime Kernel"), and the kernel dossier and contract follow.
-3. Define the semantic event model as its own surface. Observability is a
+4. Define the semantic event model as its own surface. Observability is a
    pillar, so the append-only event log gets a first-class contract with replay
    semantics.
-4. Draft memory and compression as state transforms, with provenance and
+5. Draft memory and compression as state transforms, with provenance and
    non-blocking extraction semantics.
-5. Draft what a target slot looks like, even as a stub. Pin the shape of the
+6. Draft what a target slot looks like, even as a stub. Pin the shape of the
    objective surface before the harness optimizes against it.
-6. Build the first reference composition: direct mediator calls, primary and
+7. Build the first reference composition: direct mediator calls, primary and
    shadow services, and a replayable event log.
 
 ## Candidate Capability Areas
@@ -79,7 +85,8 @@ The service slots pillar 1 formalizes. Candidate areas, not final contracts.
   privacy-minimized, collaborative.
 - Context construction — what the model sees: prompt assembly, stable and
   per-call partitioning, project instructions, memory injection, tool schemas,
-  token budgets, prompt caching, transcript compression.
+  token budgets, prompt caching, transcript compression. Parts are now drafted:
+  `context_provider.v0.1` and `context_builder.v0`.
 - Memory — disabled, explicit notes, behavioral, project-local, semantic,
   graph, episodic, external. Extraction should be background, best-effort, and
   non-blocking.
