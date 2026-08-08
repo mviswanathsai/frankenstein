@@ -468,14 +468,14 @@ contract reconciliation, not changes to the current draft by themselves.
   order it receives. The builder controls only where the tool snippet block
   appears in the system prompt, not the order within the tool list.
 
-- **Dumb by default, smart when configured.** Services that already own a
-  domain decision (Tool Invocation for tool ordering and selection, Context
-  Provider for relevance ranking) retain that intelligence. The builder does
-  not duplicate it. The builder adds intelligence only for concerns that no
-  other service owns: message normalization, window allocation, system prompt
-  structure. This avoids "double intelligence" — two services both trying to
-  decide what the model should see — and keeps each capability's domain
-  decisions in one place.
+- **Each service owns its domain decisions.** Services that already own a
+  domain — Tool Invocation for tool ordering and selection, Context Provider
+  for relevance ranking — make those calls. The builder does not override them
+  because it lacks the domain knowledge to do so without coupling deeply into
+  what those services know. The builder only owns what no other service owns:
+  message normalization, system prompt structure, and window allocation. This
+  is not a "choose dumb or smart" tradeoff — it is about who has the context
+  to make each decision.
 
 - **The builder is passive.** It does not call other capabilities, does not
   schedule work, does not persist state. The kernel orchestrates. This mirrors
