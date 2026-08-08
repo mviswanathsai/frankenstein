@@ -490,6 +490,16 @@ contract reconciliation, not changes to the current draft by themselves.
   `ToolCatalog` travels as a separate argument on `prepare` and passes through
   unchanged to the `ModelInput`.
 
+- **System prompt ordering follows Pi/Hermes convention in v0.** Research
+  (Lost in the Middle, primacy/recency studies) confirms that placement within
+  the prefix can affect attention, but the system prompt is a small fraction
+  of the total context compared to the transcript — placement within it is
+  unlikely to be the dominant performance variable. Both Pi and Hermes use
+  a fixed static order without documented rationale; following their
+  convention is a reasonable default. The bucket-and-slot structure makes
+  reordering trivial if empirical evidence later shows it matters for
+  a specific model or task.
+
 ### Implementation Notes
 
 - Go for v0 implementation, consistent with the `model_invocation` language
