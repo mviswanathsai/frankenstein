@@ -331,6 +331,16 @@ the kernel decide how to proceed.
   transcript it receives, which may have been compressed. It does not decide
   when compression should happen or call a compression service.
 
+The proposed contract was stress-tested against both Pi and Hermes: `assemble`
+maps 1:1 onto both systems' system prompt builders, `prepare` maps onto both
+systems' normalization layers (Hermes's stub synthesis is a verbatim match),
+and the pipeline shape exists in both — just not as discrete contracted
+operations. `estimate` as a discrete per-session allocation is novel: neither
+system has it; both measure reactively against static thresholds. The passive
+builder model also conflicts with both systems, whose builders actively call
+compressors and mutate session state. This is deliberate: the contract
+isolates concerns that both systems intermix.
+
 ## Possible Alternate Philosophies
 
 - **Verbatim/full-transcript builder vs normalizing builder.** One builder
@@ -457,6 +467,15 @@ contract reconciliation, not changes to the current draft by themselves.
 - **Catalog ordering is Tool Invocation's concern.** The builder preserves the
   order it receives. The builder controls only where the tool snippet block
   appears in the system prompt, not the order within the tool list.
+
+- **Dumb by default, smart when configured.** Services that already own a
+  domain decision (Tool Invocation for tool ordering and selection, Context
+  Provider for relevance ranking) retain that intelligence. The builder does
+  not duplicate it. The builder adds intelligence only for concerns that no
+  other service owns: message normalization, window allocation, system prompt
+  structure. This avoids "double intelligence" — two services both trying to
+  decide what the model should see — and keeps each capability's domain
+  decisions in one place.
 
 - **The builder is passive.** It does not call other capabilities, does not
   schedule work, does not persist state. The kernel orchestrates. This mirrors
