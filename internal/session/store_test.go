@@ -35,8 +35,8 @@ func TestCreateAndResumeSession(t *testing.T) {
 	if created.Records[0].Role != "user" {
 		t.Fatalf("initial record role = %q, want user", created.Records[0].Role)
 	}
-	if created.Records[0].Text != "start here" {
-		t.Fatalf("initial record text = %q, want start here", created.Records[0].Text)
+	if textValue(created.Records[0].Text) != "start here" {
+		t.Fatalf("initial record text = %q, want start here", textValue(created.Records[0].Text))
 	}
 
 	resumed, err := store.Resume(ctx, ResumeInput{ID: created.ID})
@@ -90,7 +90,7 @@ func TestCreateAndMutatePreserveTurnIDRefsAndCWD(t *testing.T) {
 				Record: &SessionRecord{
 					TurnID: "turn-create",
 					Role:   "assistant",
-					Text:   "next",
+					Text:   strPtr("next"),
 					Refs: []ContextRef{{
 						Kind:   "artifact",
 						Target: "artifact://reply-1",
@@ -170,7 +170,7 @@ func TestReadAndMaterializeOrderedRecord(t *testing.T) {
 		Ops: []MutationOp{
 			{
 				Type:   MutationAppendRecord,
-				Record: &SessionRecord{Role: "assistant", Text: "next"},
+				Record: &SessionRecord{Role: "assistant", Text: strPtr("next")},
 			},
 		},
 	})
@@ -191,8 +191,8 @@ func TestReadAndMaterializeOrderedRecord(t *testing.T) {
 	if read.Records[0].Seq != 1 || read.Records[1].Seq != 2 {
 		t.Fatalf("Read() record seqs = [%d,%d], want [1,2]", read.Records[0].Seq, read.Records[1].Seq)
 	}
-	if read.Records[1].Role != "assistant" || read.Records[1].Text != "next" {
-		t.Fatalf("Read() second record = (%q,%q), want assistant next", read.Records[1].Role, read.Records[1].Text)
+	if read.Records[1].Role != "assistant" || textValue(read.Records[1].Text) != "next" {
+		t.Fatalf("Read() second record = (%q,%q), want assistant next", read.Records[1].Role, textValue(read.Records[1].Text))
 	}
 
 	materialized, err := store.Materialize(ctx, MaterializeInput{ID: created.ID})
@@ -235,12 +235,12 @@ func TestReadOrdersRecordsBySessionSeq(t *testing.T) {
 	third := normalizeRecord(SessionRecord{
 		ID:   "rec_third",
 		Role: "assistant",
-		Text: "third",
+		Text: strPtr("third"),
 	}, 3, now.Add(3*time.Second))
 	second := normalizeRecord(SessionRecord{
 		ID:   "rec_second",
 		Role: "user",
-		Text: "second",
+		Text: strPtr("second"),
 	}, 2, now.Add(2*time.Second))
 
 	if err := insertRecord(ctx, tx, created.ID, third); err != nil {
@@ -266,8 +266,8 @@ func TestReadOrdersRecordsBySessionSeq(t *testing.T) {
 			t.Fatalf("record %d seq = %d, want %d", i, record.Seq, wantSeq)
 		}
 	}
-	if read.Records[1].Text != "second" || read.Records[2].Text != "third" {
-		t.Fatalf("records returned in wrong order: got %q then %q", read.Records[1].Text, read.Records[2].Text)
+	if textValue(read.Records[1].Text) != "second" || textValue(read.Records[2].Text) != "third" {
+		t.Fatalf("records returned in wrong order: got %q then %q", textValue(read.Records[1].Text), textValue(read.Records[2].Text))
 	}
 }
 
@@ -288,7 +288,7 @@ func TestAppendRecordCreatesEstimatedPromptState(t *testing.T) {
 				Record: &SessionRecord{
 					Kind: "message",
 					Role: "user",
-					Text: "hello world",
+					Text: strPtr("hello world"),
 				},
 			},
 		},
@@ -334,7 +334,7 @@ func TestIdempotentMutationDoesNotApplyTwice(t *testing.T) {
 		IdempotencyKey: "turn-1",
 		Ops: []MutationOp{{
 			Type:   MutationAppendRecord,
-			Record: &SessionRecord{Role: "assistant", Text: "once"},
+			Record: &SessionRecord{Role: "assistant", Text: strPtr("once")},
 		}},
 	}
 
@@ -356,8 +356,8 @@ func TestIdempotentMutationDoesNotApplyTwice(t *testing.T) {
 	if len(second.Records) != 2 {
 		t.Fatalf("second records = %d, want 2", len(second.Records))
 	}
-	if second.Records[1].Text != "once" {
-		t.Fatalf("second record text = %q, want once", second.Records[1].Text)
+	if textValue(second.Records[1].Text) != "once" {
+		t.Fatalf("second record text = %q, want once", textValue(second.Records[1].Text))
 	}
 }
 
@@ -373,7 +373,7 @@ func TestSetUsageReplacesEstimateWithProviderUsage(t *testing.T) {
 		ID: created.ID,
 		Ops: []MutationOp{{
 			Type:   MutationAppendRecord,
-			Record: &SessionRecord{Role: "user", Text: "hello world"},
+			Record: &SessionRecord{Role: "user", Text: strPtr("hello world")},
 		}},
 	}); err != nil {
 		t.Fatalf("append Mutate() error = %v", err)
@@ -465,4 +465,13 @@ func newTestStore(t *testing.T) *Store {
 		return time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 	}
 	return store
+}
+
+func strPtr(s string) *string { return &s }
+
+func textValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

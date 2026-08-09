@@ -40,7 +40,8 @@ means.
   `docs/model-invocation-capability-contract.md` (dossier at
   `docs/model-invocation-service-dossier.md`)
 - context builder — `context_builder.v0` —
-  `docs/context-builder-capability-contract.md` (dossier at
+  `docs/context-builder-capability-contract.md` (implemented in
+  `internal/contextbuilder/`; dossier at
   `docs/context-builder-service-dossier.md`)
 
 Not yet drafted: runtime kernel, memory, compression, and the observability
@@ -55,9 +56,12 @@ Work in this order. Move each item forward as it lands.
    interrupt behavior in `chat_completion_helpers.py`, plugin hooks, approval
    and checkpoint policy, gateway delivery constraints, memory providers, and
    eval/cron paths.
-2. Context builder (`context_builder.v0`) is drafted and in active contract
-   work alongside model invocation. Open questions remain: artifact store
-   integration, token estimation policy, and per-provider build variations.
+2. Context builder (`context_builder.v0`) is implemented in
+   `internal/contextbuilder/` — `estimate`, `assemble`, and `prepare` with
+   test coverage. Wiring it into the harness now depends on the runtime-kernel
+   contract. Sizing inputs remain for the next pass: `tool_invocation.v0`,
+   `context_provider.v0.1`, and `session.v0.2` do not yet accept token budgets
+   on `list_tools`, `get_context`, and `materialize`.
 3. Draft the runtime-kernel contract — the coherence point the other contracts
    reach into: turn lifecycle, ordering, budgets, cancellation, recovery, and
    replay invariants. The runtime kernel is the next capability in active
@@ -72,6 +76,18 @@ Work in this order. Move each item forward as it lands.
    objective surface before the harness optimizes against it.
 7. Build the first reference composition: direct mediator calls, primary and
    shadow services, and a replayable event log.
+
+## Open Problems
+
+- **Introducing entropy** — where the non-obvious improvements come from.
+  Compounding wins are found in use, not designed in, and many begin as
+  cross-domain leaps that models undergenerate by design. The harness should
+  keep room for metered, weakly-related candidates; shadow services already
+  give the shape, and the event log provides the evidence. The open questions
+  are candidate generation, the entropy budget, and the long evaluation
+  horizon that lets a sidequest earn promotion. Runs as an active research
+  arena: observations and trials accumulate in `docs/entropy-research.md`.
+  See the note in `AGENTS.md`.
 
 ## Candidate Capability Areas
 
