@@ -86,6 +86,14 @@ type SessionUsage struct {
 	APICallCount int64 `json:"api_call_count"`
 }
 
+type ToolCall struct {
+	ID                 string         `json:"id"`
+	ToolID             string         `json:"tool_id,omitempty"`
+	DefinitionRevision string         `json:"definition_revision,omitempty"`
+	Name               string         `json:"name"`
+	Arguments          map[string]any `json:"arguments"`
+}
+
 type SessionRecord struct {
 	ID  string `json:"id"`
 	Seq int64  `json:"seq"`
@@ -93,10 +101,12 @@ type SessionRecord struct {
 	TurnID string       `json:"turn_id,omitempty"`
 	Refs   []ContextRef `json:"refs,omitempty"`
 
-	Kind RecordKind      `json:"kind"`
-	Role string          `json:"role,omitempty"`
-	Text string          `json:"text,omitempty"`
-	Raw  json.RawMessage `json:"raw,omitempty"`
+	Kind     RecordKind      `json:"kind"`
+	Role     string          `json:"role,omitempty"`
+	Text     *string         `json:"text,omitempty"`
+	Raw      json.RawMessage `json:"raw,omitempty"`
+	CallID   string          `json:"call_id,omitempty"`
+	ToolCalls []ToolCall     `json:"tool_calls,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 

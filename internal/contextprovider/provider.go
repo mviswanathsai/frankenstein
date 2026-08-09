@@ -523,7 +523,10 @@ func queryShaped(record *session.SessionRecord) bool {
 	if record == nil {
 		return false
 	}
-	text := strings.TrimSpace(record.Text)
+	if record.Text == nil {
+		return false
+	}
+	text := strings.TrimSpace(*record.Text)
 	if text == "" {
 		return false
 	}

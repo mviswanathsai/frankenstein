@@ -40,7 +40,8 @@ means.
   `docs/model-invocation-capability-contract.md` (dossier at
   `docs/model-invocation-service-dossier.md`)
 - context builder — `context_builder.v0` —
-  `docs/context-builder-capability-contract.md` (dossier at
+  `docs/context-builder-capability-contract.md` (implemented in
+  `internal/contextbuilder/`, dossier at
   `docs/context-builder-service-dossier.md`)
 
 Not yet drafted: runtime kernel, memory, compression, and the observability
@@ -55,9 +56,11 @@ Work in this order. Move each item forward as it lands.
    interrupt behavior in `chat_completion_helpers.py`, plugin hooks, approval
    and checkpoint policy, gateway delivery constraints, memory providers, and
    eval/cron paths.
-2. Context builder (`context_builder.v0`) is drafted and in active contract
-   work alongside model invocation. Open questions remain: artifact store
-   integration, token estimation policy, and per-provider build variations.
+2. Context builder (`context_builder.v0`) is implemented in
+   `internal/contextbuilder/` with three actions (`estimate`, `assemble`,
+   `prepare`) and full test coverage. Open sizing notes for the next pass:
+   tool invocation integration, context provider integration, and session
+   budget inputs.
 3. Draft the runtime-kernel contract — the coherence point the other contracts
    reach into: turn lifecycle, ordering, budgets, cancellation, recovery, and
    replay invariants. The runtime kernel is the next capability in active
