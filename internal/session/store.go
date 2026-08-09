@@ -146,7 +146,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (*Session, error)
 		Refs:   input.Refs,
 		Kind:   RecordMessage,
 		Role:   "user",
-		Text:   input.Prompt,
+		Text:   stringPointer(input.Prompt),
 	}, 1, now)
 
 	session := &Session{
@@ -460,7 +460,7 @@ INSERT INTO session_records (
 		record.TurnID,
 		record.Kind,
 		record.Role,
-		record.Text,
+		textValue(record.Text),
 		refs,
 		raw,
 		record.CreatedAt.Format(time.RFC3339Nano),
@@ -545,6 +545,7 @@ ORDER BY seq ASC`, sessionID)
 	for rows.Next() {
 		var record SessionRecord
 		var turnID sql.NullString
+		var text sql.NullString
 		var refs sql.NullString
 		var raw sql.NullString
 		var createdAt string
@@ -555,7 +556,7 @@ ORDER BY seq ASC`, sessionID)
 			&turnID,
 			&record.Kind,
 			&record.Role,
-			&record.Text,
+			&text,
 			&refs,
 			&raw,
 			&createdAt,
@@ -567,6 +568,9 @@ ORDER BY seq ASC`, sessionID)
 		}
 		if turnID.Valid {
 			record.TurnID = turnID.String
+		}
+		if text.Valid {
+			record.Text = stringPointer(text.String)
 		}
 		if refs.Valid && strings.TrimSpace(refs.String) != "" {
 			if err := json.Unmarshal([]byte(refs.String), &record.Refs); err != nil {
@@ -600,7 +604,7 @@ func normalizeRecord(record SessionRecord, seq int64, now time.Time) SessionReco
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = now
 	}
-	record.CharCount = int64(len([]rune(record.Text)))
+	record.CharCount = int64(len([]rune(textValue(record.Text))))
 	if record.Tokens.Value == 0 {
 		record.Tokens = TokenCount{
 			Value:  estimateTokens(record.CharCount),
@@ -610,6 +614,17 @@ func normalizeRecord(record SessionRecord, seq int64, now time.Time) SessionReco
 		record.Tokens.Source = TokenSourceTokenizer
 	}
 	return record
+}
+
+func stringPointer(value string) *string {
+	return &value
+}
+
+func textValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func updateUsageForAppendedRecord(usage SessionUsage, record SessionRecord) SessionUsage {

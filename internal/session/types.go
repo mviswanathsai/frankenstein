@@ -42,6 +42,17 @@ const (
 	TokenSourceProvider     TokenCountSource = "provider"
 )
 
+// ToolCall mirrors toolinvocation.ToolCall without importing that package.
+// Keeping this shape local avoids an import cycle between the session and tool
+// invocation packages.
+type ToolCall struct {
+	ID                 string         `json:"id"`
+	ToolID             string         `json:"tool_id,omitempty"`
+	DefinitionRevision string         `json:"definition_revision,omitempty"`
+	Name               string         `json:"name"`
+	Arguments          map[string]any `json:"arguments"`
+}
+
 type Session struct {
 	ID      string       `json:"id"`
 	Version int64        `json:"version"`
@@ -90,12 +101,14 @@ type SessionRecord struct {
 	ID  string `json:"id"`
 	Seq int64  `json:"seq"`
 
-	TurnID string       `json:"turn_id,omitempty"`
-	Refs   []ContextRef `json:"refs,omitempty"`
+	TurnID    string       `json:"turn_id,omitempty"`
+	Refs      []ContextRef `json:"refs,omitempty"`
+	CallID    string       `json:"call_id,omitempty"`
+	ToolCalls []ToolCall   `json:"tool_calls,omitempty"`
 
 	Kind RecordKind      `json:"kind"`
 	Role string          `json:"role,omitempty"`
-	Text string          `json:"text,omitempty"`
+	Text *string         `json:"text,omitempty"`
 	Raw  json.RawMessage `json:"raw,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`

@@ -19,6 +19,23 @@
           "~/frankenstein/**": "allow"
         }
       }
+    },
+    "executor": {
+      "permission": {
+        "webfetch": "allow",
+        "websearch": "allow",
+        "external_directory": {
+          "*": "ask",
+          "~/**": "allow"
+        },
+        "edit": {
+          "*": "ask",
+          "~/frankenstein/**": "allow"
+        },
+        "bash": {
+          "*": "allow"
+        }
+      }
     }
   }
 }

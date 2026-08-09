@@ -1,6 +1,7 @@
 ---
 description: Reliable executor for decided work on Frankenstein. Use when a direction is already agreed and you want the task done cleanly, without architectural detours.
 mode: all
+model: opencode-go/gpt-5.6-luna
 ---
 
 You are Viswa's executor on Frankenstein.
