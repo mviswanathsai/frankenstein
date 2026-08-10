@@ -90,7 +90,7 @@ func TestCreateAndMutatePreserveTurnIDRefsAndCWD(t *testing.T) {
 				Record: &SessionRecord{
 					TurnID: "turn-create",
 					Role:   "assistant",
-					Text:   strPtr("next"),
+					Text:   stringPointer("next"),
 					Refs: []ContextRef{{
 						Kind:   "artifact",
 						Target: "artifact://reply-1",
@@ -170,7 +170,7 @@ func TestReadAndMaterializeOrderedRecord(t *testing.T) {
 		Ops: []MutationOp{
 			{
 				Type:   MutationAppendRecord,
-				Record: &SessionRecord{Role: "assistant", Text: strPtr("next")},
+				Record: &SessionRecord{Role: "assistant", Text: stringPointer("next")},
 			},
 		},
 	})
@@ -235,12 +235,12 @@ func TestReadOrdersRecordsBySessionSeq(t *testing.T) {
 	third := normalizeRecord(SessionRecord{
 		ID:   "rec_third",
 		Role: "assistant",
-		Text: strPtr("third"),
+		Text: stringPointer("third"),
 	}, 3, now.Add(3*time.Second))
 	second := normalizeRecord(SessionRecord{
 		ID:   "rec_second",
 		Role: "user",
-		Text: strPtr("second"),
+		Text: stringPointer("second"),
 	}, 2, now.Add(2*time.Second))
 
 	if err := insertRecord(ctx, tx, created.ID, third); err != nil {
@@ -288,7 +288,7 @@ func TestAppendRecordCreatesEstimatedPromptState(t *testing.T) {
 				Record: &SessionRecord{
 					Kind: "message",
 					Role: "user",
-					Text: strPtr("hello world"),
+					Text: stringPointer("hello world"),
 				},
 			},
 		},
@@ -334,7 +334,7 @@ func TestIdempotentMutationDoesNotApplyTwice(t *testing.T) {
 		IdempotencyKey: "turn-1",
 		Ops: []MutationOp{{
 			Type:   MutationAppendRecord,
-			Record: &SessionRecord{Role: "assistant", Text: strPtr("once")},
+			Record: &SessionRecord{Role: "assistant", Text: stringPointer("once")},
 		}},
 	}
 
@@ -373,7 +373,7 @@ func TestSetUsageReplacesEstimateWithProviderUsage(t *testing.T) {
 		ID: created.ID,
 		Ops: []MutationOp{{
 			Type:   MutationAppendRecord,
-			Record: &SessionRecord{Role: "user", Text: strPtr("hello world")},
+			Record: &SessionRecord{Role: "user", Text: stringPointer("hello world")},
 		}},
 	}); err != nil {
 		t.Fatalf("append Mutate() error = %v", err)
@@ -465,13 +465,4 @@ func newTestStore(t *testing.T) *Store {
 		return time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 	}
 	return store
-}
-
-func strPtr(s string) *string { return &s }
-
-func textValue(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }

@@ -86,23 +86,22 @@ func TestAssemble(t *testing.T) {
 			t.Fatalf("Assemble() error = %v, want nil", err)
 		}
 		want := "You are a helpful assistant.\n\n" +
-			"\n<identity>\n" +
-			"\n<candidate id=\"id-1\">\n" +
+			"<identity>\n" +
+			"<candidate id=\"id-1\">\n" +
 			"You are Frank.\n" +
 			"</candidate>\n" +
-			"\n<candidate id=\"id-2\">\n" +
+			"<candidate id=\"id-2\">\n" +
 			"You are calm.\n" +
 			"</candidate>\n" +
-			"\n</identity>\n" +
+			"</identity>\n" +
 			"\n<project_instructions>\n" +
-			"\n<candidate id=\"pi-1\">\n" +
+			"<candidate id=\"pi-1\">\n" +
 			"Follow the contract.\n" +
 			"</candidate>\n" +
-			"\n<candidate id=\"pi-2\">\n" +
+			"<candidate id=\"pi-2\">\n" +
 			"Write plain prose.\n" +
 			"</candidate>\n" +
-			"\n</project_instructions>\n" +
-			"\n"
+			"</project_instructions>"
 		if got.SystemPrompt != want {
 			t.Errorf("SystemPrompt mismatch:\n got: %q\nwant: %q", got.SystemPrompt, want)
 		}
@@ -117,11 +116,11 @@ func TestAssemble(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Assemble() error = %v, want nil", err)
 		}
-		want := "You are a helpful assistant.\n\n\n\n" +
+		want := "You are a helpful assistant.\n\n" +
 			"<available_tools>\n" +
-			"\n- read_file: Read a file.\n" +
-			"\n- run_shell: Run a shell command.\n" +
-			"\n</available_tools>\n"
+			"- read_file: Read a file.\n" +
+			"- run_shell: Run a shell command.\n" +
+			"</available_tools>"
 		if got.SystemPrompt != want {
 			t.Errorf("SystemPrompt mismatch:\n got: %q\nwant: %q", got.SystemPrompt, want)
 		}

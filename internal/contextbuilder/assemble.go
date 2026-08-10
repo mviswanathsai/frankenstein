@@ -14,24 +14,23 @@ import (
 
 // assembleTemplateText is the default system prompt template. Slots are
 // rendered in the order they appear in Slots; tools render in catalog order.
-const assembleTemplateText = `You are a helpful assistant.
+const assembleTemplateText = `You are a helpful assistant.{{- range .Slots}}
 
-{{range .Slots}}
 <{{.Name}}>
-{{range .Items}}
+{{- range .Items}}
 <candidate id="{{.ID}}">
 {{.Content}}
 </candidate>
-{{end}}
+{{- end}}
 </{{.Name}}>
-{{end}}
-{{if .Tools}}
+{{- end}}{{if .Tools}}
+
 <available_tools>
-{{range .Tools}}
+{{- range .Tools}}
 - {{.Name}}: {{.Description}}
-{{end}}
+{{- end}}
 </available_tools>
-{{end}}`
+{{- end}}`
 
 // assembleTemplate is the parsed form of assembleTemplateText. It is parsed
 // once at init because the source is a constant; execution is deterministic.
