@@ -179,6 +179,13 @@ context when the consumer cannot infer that distinction, while the consumer
 still owns acceptance, caching, indexing, replacement, and eviction. State
 explicitly whether repeated responses are complete snapshots or deltas.
 
+Interpretive repair of model-emitted output belongs to the model-facing
+capability; authoritative resolution against live registration and policy
+belongs to the owning capability. Repair may propose canonical values but must
+not grant authority. Record repair evidence — what the model emitted versus
+what the capability produced — as capability-local event fields rather than
+extensions to shared shapes.
+
 ## Reconciliation Questions
 
 Ask, in order:

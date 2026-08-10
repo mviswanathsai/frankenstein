@@ -482,12 +482,15 @@ Tool Invocation does not need durable or unbounded historical catalog storage.
 ## Progressive Tool Disclosure
 
 A service may offer progressive disclosure through ordinary model-facing tools
-named `tool_search`, `tool_describe`, and `tool_load`.
+named `tool_search`, `tool_describe`, and `tool_load`. A service offering proxy
+dispatch also publishes `tool_call` as an ordinary catalogued tool.
 
 - `tool_search` returns a bounded set of currently discoverable tool names and
   summaries. Searching does not change the active catalog.
 - `tool_describe` returns the selected tool's model-facing name, description,
-  and input schema. Describing does not change the active catalog.
+  and input schema. On success, its `ToolResult.described_tool` carries the
+  same canonical target definition as structured evidence. Describing does not
+  change the active catalog.
 - `tool_load` asks Tool Invocation to make a discoverable tool directly
   callable in the next model invocation.
 
@@ -530,9 +533,9 @@ model -> direct call to the loaded tool
 ```
 
 Progressive disclosure may use a generic execution proxy instead of changing
-the callable catalog. The proxy is an ordinary catalogued tool and must not
-bypass effective-target validation, authorization, policy, approval, execution
-containment, or result rules. A description returned as ordinary result text
+the callable catalog. The proxy is an ordinary catalogued tool named
+`tool_call` and must not bypass effective-target validation, authorization,
+policy, approval, execution containment, or result rules. A description returned as ordinary result text
 may inform a later proxy call but does not make its target provider-natively
 callable.
 
@@ -603,6 +606,7 @@ ToolResult {
   side_effect
   stop_requested?
   failure?
+  described_tool?
 }
 
 ToolResultStatus =
@@ -683,6 +687,19 @@ owns the final decision.
 status. `code` is stable machine-readable classification. `retryable` says
 whether retry could be reasonable in principle; it is not permission to retry
 an effectful call automatically.
+
+`described_tool` is optional structured evidence present only on a successful
+`tool_describe` result. It contains the canonical `ToolDefinition` whose name,
+description, and input schema were rendered into `text`. `ToolResult.tool_id`
+continues to identify the `tool_describe` bridge itself; `described_tool.id`
+identifies the described target. Producing this field proves only that Tool
+Invocation produced the description result. It does not prove that the result
+was delivered to or consumed by the model, does not grant execution authority,
+and does not add the target to or otherwise change `ToolCatalog`. Failed,
+unknown, denied, unavailable, or malformed descriptions must not include
+`described_tool`. Exact exposure-catalog event references are deferred until
+Model Invocation and eventing evidence define how delivered tool results are
+recorded.
 
 Base failure codes include:
 

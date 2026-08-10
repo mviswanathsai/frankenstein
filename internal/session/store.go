@@ -146,7 +146,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (*Session, error)
 		Refs:   input.Refs,
 		Kind:   RecordMessage,
 		Role:   "user",
-		Text:   input.Prompt,
+		Text:   stringPointer(input.Prompt),
 	}, 1, now)
 
 	session := &Session{
@@ -450,6 +450,10 @@ func insertRecord(ctx context.Context, tx *sql.Tx, sessionID string, record Sess
 		}
 		refs = string(refsJSON)
 	}
+	var text any
+	if record.Text != nil {
+		text = *record.Text
+	}
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO session_records (
 	session_id, seq, id, turn_id, kind, role, text, refs_json, raw_json, created_at, char_count, token_count, token_count_source
@@ -460,7 +464,7 @@ INSERT INTO session_records (
 		record.TurnID,
 		record.Kind,
 		record.Role,
-		record.Text,
+		text,
 		refs,
 		raw,
 		record.CreatedAt.Format(time.RFC3339Nano),
@@ -545,6 +549,7 @@ ORDER BY seq ASC`, sessionID)
 	for rows.Next() {
 		var record SessionRecord
 		var turnID sql.NullString
+		var text sql.NullString
 		var refs sql.NullString
 		var raw sql.NullString
 		var createdAt string
@@ -555,7 +560,7 @@ ORDER BY seq ASC`, sessionID)
 			&turnID,
 			&record.Kind,
 			&record.Role,
-			&record.Text,
+			&text,
 			&refs,
 			&raw,
 			&createdAt,
@@ -567,6 +572,9 @@ ORDER BY seq ASC`, sessionID)
 		}
 		if turnID.Valid {
 			record.TurnID = turnID.String
+		}
+		if text.Valid {
+			record.Text = stringPointer(text.String)
 		}
 		if refs.Valid && strings.TrimSpace(refs.String) != "" {
 			if err := json.Unmarshal([]byte(refs.String), &record.Refs); err != nil {
@@ -600,7 +608,7 @@ func normalizeRecord(record SessionRecord, seq int64, now time.Time) SessionReco
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = now
 	}
-	record.CharCount = int64(len([]rune(record.Text)))
+	record.CharCount = int64(len([]rune(textValue(record.Text))))
 	if record.Tokens.Value == 0 {
 		record.Tokens = TokenCount{
 			Value:  estimateTokens(record.CharCount),
@@ -649,4 +657,18 @@ func newID(prefix string) string {
 
 func rollback(tx *sql.Tx) {
 	_ = tx.Rollback()
+}
+
+// stringPointer returns a pointer to s, making it convenient to construct
+// optional *string fields in struct literals.
+func stringPointer(s string) *string {
+	return &s
+}
+
+// textValue dereferences a *string, returning "" when the pointer is nil.
+func textValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

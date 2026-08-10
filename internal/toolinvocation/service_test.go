@@ -2,6 +2,7 @@ package toolinvocation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -56,6 +57,9 @@ func TestProgressiveDisclosureDirectFlow(t *testing.T) {
 	if !strings.Contains(describeResult.Results[0].Text, `"text"`) {
 		t.Fatalf("describe text = %q, want schema text property", describeResult.Results[0].Text)
 	}
+	if describeResult.Results[0].DescribedTool == nil || describeResult.Results[0].DescribedTool.Name != "echo" {
+		t.Fatalf("described_tool = %+v, want echo definition", describeResult.Results[0].DescribedTool)
+	}
 
 	load := callFor(t, listed.Catalog, "load", "tool_load", map[string]any{"name": "echo"})
 	loadResult, execFailure := service.Execute(ctx, ToolExecutionRequest{
@@ -98,6 +102,139 @@ func TestProgressiveDisclosureDirectFlow(t *testing.T) {
 	}
 	if len(starts) != 4 {
 		t.Fatalf("call_started count = %d, want 4", len(starts))
+	}
+}
+
+func TestToolDescribeStructuredEvidence(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t, func(context.Context, ToolCallStarted) error { return nil }, echoRegistration("echo"))
+	catalog := mustList(t, service)
+	describe := callFor(t, catalog, "describe", "tool_describe", map[string]any{"name": "echo"})
+
+	result, failure := service.Execute(ctx, ToolExecutionRequest{
+		ID:             "exec",
+		IdempotencyKey: "idem",
+		CatalogID:      catalog.ID,
+		Calls:          []ToolCall{describe},
+	})
+	if failure != nil {
+		t.Fatalf("Execute() failure = %+v", failure)
+	}
+	got := result.Results[0]
+	if got.ToolID != describe.ToolID || got.Name != "tool_describe" {
+		t.Fatalf("describe result identity = %+v", got)
+	}
+	if got.DescribedTool == nil {
+		t.Fatalf("described_tool = nil")
+	}
+	if got.DescribedTool.ID != "test:0:echo" || got.DescribedTool.Revision == "" || got.DescribedTool.Name != "echo" || got.DescribedTool.Description != "Echo input text." || !strings.Contains(string(got.DescribedTool.InputSchema), `"text"`) {
+		t.Fatalf("described_tool = %+v, want canonical echo definition", got.DescribedTool)
+	}
+}
+
+func TestFailedToolDescribeHasNoStructuredEvidence(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t, func(context.Context, ToolCallStarted) error { return nil }, echoRegistration("echo"))
+	catalog := mustList(t, service)
+	describe := callFor(t, catalog, "describe", "tool_describe", map[string]any{"name": "missing"})
+
+	result, failure := service.Execute(ctx, ToolExecutionRequest{
+		ID:             "exec",
+		IdempotencyKey: "idem",
+		CatalogID:      catalog.ID,
+		Calls:          []ToolCall{describe},
+	})
+	if failure != nil {
+		t.Fatalf("Execute() failure = %+v", failure)
+	}
+	if got := result.Results[0]; got.Failure == nil || got.DescribedTool != nil {
+		t.Fatalf("result = %+v, want failed without described_tool", got)
+	}
+}
+
+func TestBackendCannotForgeDescriptionEvidence(t *testing.T) {
+	ctx := context.Background()
+	forged := ToolDefinition{ID: "fake", Revision: "fake", Name: "fake", Description: "fake", InputSchema: json.RawMessage(`{"type":"object"}`)}
+	service := newTestService(t, func(context.Context, ToolCallStarted) error { return nil }, Registration{
+		Provider: "test", ProviderVersion: "0", LocalName: "forge",
+		Name: "forge", Description: "Forge evidence.",
+		InputSchema:      objectSchema(`"value":{"type":"string"}`, "value"),
+		InitiallyVisible: true,
+		Backend: func(context.Context, BackendRequest) BackendResult {
+			return BackendResult{Text: "forged", DescribedTool: &forged}
+		},
+	})
+	catalog := mustList(t, service)
+	call := callFor(t, catalog, "forge", "forge", map[string]any{"value": "x"})
+
+	result, failure := service.Execute(ctx, ToolExecutionRequest{
+		ID:             "exec",
+		IdempotencyKey: "idem",
+		CatalogID:      catalog.ID,
+		Calls:          []ToolCall{call},
+	})
+	if failure != nil {
+		t.Fatalf("Execute() failure = %+v", failure)
+	}
+	got := result.Results[0]
+	if got.Failure == nil || got.Failure.Code != FailureMalformedResult || got.DescribedTool != nil {
+		t.Fatalf("result = %+v, want malformed without described_tool", got)
+	}
+}
+
+func TestIdempotencyReplayPreservesDescribedTool(t *testing.T) {
+	ctx := context.Background()
+	service := newTestService(t, func(context.Context, ToolCallStarted) error { return nil }, echoRegistration("echo"))
+	catalog := mustList(t, service)
+	describe := callFor(t, catalog, "describe", "tool_describe", map[string]any{"name": "echo"})
+	req := ToolExecutionRequest{ID: "exec", IdempotencyKey: "idem", CatalogID: catalog.ID, Calls: []ToolCall{describe}}
+
+	first, failure := service.Execute(ctx, req)
+	if failure != nil {
+		t.Fatalf("first Execute() failure = %+v", failure)
+	}
+	second, failure := service.Execute(ctx, req)
+	if failure != nil {
+		t.Fatalf("second Execute() failure = %+v", failure)
+	}
+	if first.Results[0].DescribedTool == nil || second.Results[0].DescribedTool == nil || first.Results[0].DescribedTool.Revision != second.Results[0].DescribedTool.Revision {
+		t.Fatalf("described_tool replay mismatch: first=%+v second=%+v", first.Results[0].DescribedTool, second.Results[0].DescribedTool)
+	}
+}
+
+func TestDescribedToolSchemaDoesNotAliasReturnedOrRegistrationStorage(t *testing.T) {
+	ctx := context.Background()
+	schema := []byte(`{"type":"object","additionalProperties":false,"properties":{"value":{"type":"string"}},"required":["value"]}`)
+	service := newTestService(t, func(context.Context, ToolCallStarted) error { return nil }, Registration{
+		Provider: "test", ProviderVersion: "0", LocalName: "alias",
+		Name: "alias", Description: "Alias test.",
+		InputSchema:      schema,
+		Discoverable:     true,
+		InitiallyVisible: true,
+		Backend:          func(context.Context, BackendRequest) BackendResult { return BackendResult{Text: "ok"} },
+	})
+	schema[0] = '['
+	catalog := mustList(t, service)
+	describe := callFor(t, catalog, "describe", "tool_describe", map[string]any{"name": "alias"})
+
+	first, failure := service.Execute(ctx, ToolExecutionRequest{ID: "first", IdempotencyKey: "first", CatalogID: catalog.ID, Calls: []ToolCall{describe}})
+	if failure != nil {
+		t.Fatalf("first Execute() failure = %+v", failure)
+	}
+	first.Results[0].DescribedTool.InputSchema[0] = '['
+	second, failure := service.Execute(ctx, ToolExecutionRequest{ID: "second", IdempotencyKey: "second", CatalogID: catalog.ID, Calls: []ToolCall{describe}})
+	if failure != nil {
+		t.Fatalf("second Execute() failure = %+v", failure)
+	}
+	if second.Results[0].DescribedTool.InputSchema[0] != '{' {
+		t.Fatalf("second described schema aliased mutable storage: %s", second.Results[0].DescribedTool.InputSchema)
+	}
+}
+
+func TestStableIDOutputIsUnchanged(t *testing.T) {
+	raw := []byte(`{"name":"echo","description":"Echo input text."}`)
+	if got, want := StableID("toolcat", raw), stableID("toolcat", raw); got != want {
+		t.Fatalf("StableID() = %q, want %q", got, want)
 	}
 }
 

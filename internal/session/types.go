@@ -90,18 +90,31 @@ type SessionRecord struct {
 	ID  string `json:"id"`
 	Seq int64  `json:"seq"`
 
-	TurnID string       `json:"turn_id,omitempty"`
-	Refs   []ContextRef `json:"refs,omitempty"`
+	TurnID    string       `json:"turn_id,omitempty"`
+	Refs      []ContextRef `json:"refs,omitempty"`
+	ToolCalls []ToolCall   `json:"tool_calls,omitempty"`
+	CallID    string       `json:"call_id,omitempty"`
 
 	Kind RecordKind      `json:"kind"`
 	Role string          `json:"role,omitempty"`
-	Text string          `json:"text,omitempty"`
+	Text *string         `json:"text,omitempty"`
 	Raw  json.RawMessage `json:"raw,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 
 	CharCount int64      `json:"char_count"`
 	Tokens    TokenCount `json:"tokens"`
+}
+
+// ToolCall mirrors toolinvocation.ToolCall field-for-field. The session
+// package must not import toolinvocation (toolinvocation imports session for
+// ContextRef and TokenCount); the Context Builder maps between the two shapes.
+type ToolCall struct {
+	ID                 string         `json:"id"`
+	ToolID             string         `json:"tool_id,omitempty"`
+	DefinitionRevision string         `json:"definition_revision,omitempty"`
+	Name               string         `json:"name"`
+	Arguments          map[string]any `json:"arguments"`
 }
 
 type ContextRef struct {

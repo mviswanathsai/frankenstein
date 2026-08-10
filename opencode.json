@@ -1,0 +1,24 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "collaborator",
+  "permission": {
+    "webfetch": "ask",
+    "websearch": "ask"
+  },
+  "agent": {
+    "collaborator": {
+      "permission": {
+        "webfetch": "allow",
+        "websearch": "allow",
+        "external_directory": {
+          "*": "ask",
+          "~/**": "allow"
+        },
+        "edit": {
+          "*": "ask",
+          "~/frankenstein/**": "allow"
+        }
+      }
+    }
+  }
+}

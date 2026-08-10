@@ -136,6 +136,7 @@ type ToolResult struct {
 	SideEffect    ToolSideEffect                `json:"side_effect"`
 	StopRequested bool                          `json:"stop_requested,omitempty"`
 	Failure       *ToolFailure                  `json:"failure,omitempty"`
+	DescribedTool *ToolDefinition               `json:"described_tool,omitempty"`
 }
 
 type ToolCallStarted struct {
