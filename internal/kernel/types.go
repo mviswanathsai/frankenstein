@@ -2,8 +2,6 @@ package kernel
 
 import (
 	"time"
-
-	"frankenstein/internal/toolinvocation"
 )
 
 // KernelState is the kernel's lifecycle state.
@@ -41,15 +39,6 @@ type ContinueInput struct {
 	Messages      []string
 	Model         string
 	ThinkingLevel string
-}
-
-// TurnObserver receives streaming events from the kernel during a turn.
-type TurnObserver interface {
-	OnModelContent(delta string)
-	OnReasoning(delta string)
-	OnToolCallStart(name string, args map[string]any)
-	OnToolResult(result toolinvocation.ToolResult)
-	OnTurnEnd(exitReason ExitReason, finalContent string)
 }
 
 // Config holds kernel-level defaults and budgets.
