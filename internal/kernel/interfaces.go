@@ -10,6 +10,17 @@ import (
 	"frankenstein/internal/toolinvocation"
 )
 
+// TurnObserver receives streaming events from the kernel during a turn.
+// The kernel calls it at key moments — model output, tool execution,
+// turn completion. The frontend (or gateway) implements it.
+type TurnObserver interface {
+	OnModelContent(delta string)
+	OnReasoning(delta string)
+	OnToolCallStart(name string, args map[string]any)
+	OnToolResult(result toolinvocation.ToolResult)
+	OnTurnEnd(exitReason ExitReason, finalContent string)
+}
+
 // ToolInvoker is the kernel's outbound surface to the Tool Invocation
 // capability. The concrete service satisfies it structurally; the kernel
 // never constructs, modifies, or reorders a catalog itself.
