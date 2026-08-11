@@ -59,7 +59,6 @@ func (k *Kernel) New(ctx context.Context, input NewInput) (sessionID string, err
 
 	k.cancelCtx, k.cancelFn = context.WithCancel(ctx)
 	k.turnID = "turn_" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	k.observer = nil
 
 	defer func() {
 		k.mu.Lock()
@@ -78,7 +77,7 @@ func (k *Kernel) New(ctx context.Context, input NewInput) (sessionID string, err
 }
 
 // Continue runs another turn on an existing session. It blocks until the turn
-// ends or is cancelled. Returns only an error; the session already exists.
+// ends or is cancelled.
 func (k *Kernel) Continue(ctx context.Context, input ContinueInput) (err error) {
 	if strings.TrimSpace(input.SessionID) == "" {
 		return ErrInvalidSession
@@ -94,7 +93,6 @@ func (k *Kernel) Continue(ctx context.Context, input ContinueInput) (err error) 
 
 	k.cancelCtx, k.cancelFn = context.WithCancel(ctx)
 	k.turnID = "turn_" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	k.observer = nil
 
 	defer func() {
 		k.mu.Lock()
@@ -133,9 +131,4 @@ func (k *Kernel) Cancel() {
 	}
 }
 
-// runTurn executes one turn loop. Stub: to be implemented by ticket #6
-// (kernel-loop).
-func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) (string, error) {
-	// Stub: to be implemented by ticket #6 (kernel-loop).
-	return "", fmt.Errorf("runTurn not implemented")
-}
+// runTurn is defined in loop.go.
