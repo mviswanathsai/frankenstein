@@ -38,24 +38,9 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 		}
 		sessionID = sess.ID
 
-		// Append subsequent messages as additional session records.
-		for i := 1; i < len(input.Messages); i++ {
-			msg := input.Messages[i]
-			_, err = k.session.Mutate(ctx, session.MutateInput{
-				ID: sessionID,
-				Ops: []session.MutationOp{{
-					Type: session.MutationAppendRecord,
-					Record: &session.SessionRecord{
-						TurnID: k.turnID,
-						Kind:   session.RecordMessage,
-						Role:   "user",
-						Text:   &msg,
-					},
-				}},
-			})
-			if err != nil {
-				return sessionID, fmt.Errorf("session append message %d: %w", i, err)
-			}
+		// Batch-append subsequent messages.
+		if err := k.appendUserMessages(ctx, sessionID, input.Messages[1:]); err != nil {
+			return sessionID, err
 		}
 	} else {
 		var err error
@@ -64,32 +49,18 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 			return sessionID, fmt.Errorf("session resume: %w", err)
 		}
 
-		// Append continue messages as session records.
-		for _, msg := range input.Messages {
-			_, err = k.session.Mutate(ctx, session.MutateInput{
-				ID: sessionID,
-				Ops: []session.MutationOp{{
-					Type: session.MutationAppendRecord,
-					Record: &session.SessionRecord{
-						TurnID: k.turnID,
-						Kind:   session.RecordMessage,
-						Role:   "user",
-						Text:   &msg,
-					},
-				}},
-			})
-			if err != nil {
-				return sessionID, fmt.Errorf("session append message: %w", err)
-			}
+		// Batch-append continue messages.
+		if err := k.appendUserMessages(ctx, sessionID, input.Messages); err != nil {
+			return sessionID, err
 		}
 	}
 
 	// --- Model resolution ---
 	model := k.resolveModel(sess, input)
 
-	// --- Check session-level budget on continue ---
-	if !isNew && sessionBudgetExceeded(k.cfg, sess.Usage) {
-		return sessionID, fmt.Errorf("%s: session budget exhausted", ExitBudgetExhausted)
+	// --- Check session-level budget ---
+	if sessionBudgetExceeded(k.cfg, sess.Usage) {
+		return sessionID, fmt.Errorf("%w: session budget exceeded", errors.New(string(ExitBudgetExhausted)))
 	}
 
 	// --- Setup or reuse cached prefix ---
@@ -353,4 +324,28 @@ func (k *Kernel) materializeWithRetry(ctx context.Context, sessionID string) (*s
 		lastErr = err
 	}
 	return nil, fmt.Errorf("materialize failed: %w", lastErr)
+}
+
+// appendUserMessages batch-appends a list of user messages to the session
+// in a single Mutate call. Each message becomes a SessionRecord with kind
+// message, role user.
+func (k *Kernel) appendUserMessages(ctx context.Context, sessionID string, messages []string) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	ops := make([]session.MutationOp, len(messages))
+	for i, msg := range messages {
+		msg := msg
+		ops[i] = session.MutationOp{
+			Type: session.MutationAppendRecord,
+			Record: &session.SessionRecord{
+				TurnID: k.turnID,
+				Kind:   session.RecordMessage,
+				Role:   "user",
+				Text:   &msg,
+			},
+		}
+	}
+	_, err := k.session.Mutate(ctx, session.MutateInput{ID: sessionID, Ops: ops})
+	return err
 }
