@@ -131,9 +131,4 @@ func (k *Kernel) Cancel() {
 	}
 }
 
-// runTurn executes one turn loop. Stub: to be implemented by ticket #6
-// (kernel-loop).
-func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) (string, error) {
-	// Stub: to be implemented by ticket #6 (kernel-loop).
-	return "", fmt.Errorf("runTurn not implemented")
-}
+// runTurn is defined in loop.go.
