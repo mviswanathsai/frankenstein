@@ -1,8 +1,8 @@
 # Session Capability Contract
 
-Date: 2026-07-18
+Date: 2026-08-11
 
-Contract version: `session.v0.2`.
+Contract version: `session.v0.3`.
 
 Status: draft.
 
@@ -10,10 +10,12 @@ This is a lightweight contract sketch, not a wire protocol or OpenAPI-style
 schema. It names the minimum outside-visible promises a session service must
 make so the rest of an agentic harness can use it without knowing its internals.
 
-The initial version was verified against the `internal/session` implementation.
-This draft is now being refined as adjacent contracts exercise it, so the Go
-reference service may temporarily lag accepted contract changes. The document
-is the capability shape the rest of the harness should be able to rely on.
+`session.v0.3` drops `mutate`, `resume`, `read`, and `materialize` from v0.2.
+Writes become dedicated single-purpose actions — `write_message`,
+`write_tool_call`, `write_tool_result`, `write_system_note`, `write_record`,
+`set_metadata`, `set_usage`. Reads collapse into `get`. State is a first-class
+field on every response. Turn grouping is owned by the session service, not by
+the caller.
 
 The contract should stay small. A service may be much richer than this, but the
 runtime can only assume the base surface below unless the service advertises
@@ -23,577 +25,479 @@ more.
 
 The session capability owns conversation continuity.
 
-It gives the harness a stable place to create, resume, mutate, inspect,
-materialize, and delete agent sessions. It also exposes the active continuation
-state the runtime needs to keep working from the intended prior state.
-
-Session storage and context materialization are related but not identical.
-`session.read` returns the canonical ordered session record visible to the
-caller. `session.materialize` returns the continuation state the runtime should
-use for the next turn.
+Every record written to a session is persisted, ordered, and retrievable. The
+session service assigns record identities, sequence, timestamps, and turn
+grouping. It exposes the full ordered log, session metadata, and usage
+accounting. Lifecycle operations — create, get, delete — are the only read
+paths. Every write is a discrete, named action.
 
 ## Owned State
 
 A session service owns:
 
-- session identity and metadata
-- session lifecycle from creation, persistence, mutation and deletion
-- session logic: append-only, branching, forking, roll-back etc.,
-- usage/accounting state associated with each session
+- session identity, version, and lifecycle state
+- the ordered log of session records
+- turn grouping (the service infers turn boundaries from the record stream)
+- session metadata and usage accounting
+- record identity, sequence, and timestamps
 
-The service may store this state however it wants. The contract does not require
-a database, event log, flat transcript file, provider thread, or branch tree.
+The service may store this state however it wants. The contract does not
+require a database, event log, flat file, or branch tree.
 
 ## Session Object
 
-Successful `session.create`, `session.resume`, `session.mutate`,
-`session.read`, and `session.delete` return a session object as their terminal
-payload.
+A session has a stable identity and a monotonic version.
 
 ```text
 Session {
-  id
-  version
-  state
-  created_at
-  updated_at
-  deleted_at?
-  metadata: SessionMetadata
-  usage: SessionUsage
-  records: SessionRecord[]
+    id
+    version
+    state
+    created_at
+    updated_at
+    deleted_at?
+    metadata: SessionMetadata
+    usage:    SessionUsage
+    records:  SessionRecord[]
 }
 ```
 
-`metadata` is exactly one `SessionMetadata` value. `usage` is a separate
-`SessionUsage` value, not a second metadata value and not nested inside
-`metadata`. The distinction is observable in `session.mutate`: `set_metadata`
-replaces `SessionMetadata`, while `set_usage` replaces `SessionUsage`.
-
 `id` is stable for the life of the session.
 
-`version` starts at `1` on creation and increases when accepted mutations change
-session state. A read or resume must not change the version. A delete that
-changes an active session to deleted is a state change and should advance the
-version. Repeating delete against an already-deleted session may return the
-current deleted session without another state change.
+`version` starts at `1` on creation and increases when an accepted write
+changes session state. Reads must not change the version.
 
-`state` is the lifecycle state visible to the caller. The base lifecycle states
-are:
+`state` is the lifecycle state visible to the caller. Base states:
 
 ```text
 active
 deleted
 ```
 
-An implementation may have richer internal states such as archived, branched,
-forked, compacted, expired, locked, or collaborative. Those are implementation
-philosophy unless advertised as part of a richer surface.
+An implementation may have richer internal states (archived, branched,
+compacted, expired, locked). Those are implementation philosophy unless
+advertised as part of a richer surface.
 
 `created_at`, `updated_at`, and `deleted_at` are service-owned timestamps.
 `deleted_at` is present only after deletion.
 
 ## Session Metadata
 
-The base metadata surface is optional and surface-oriented. It is not context
-by itself; it is information the session service stores for resume, display,
-routing, and diagnostics.
+Optional, surface-oriented information the session service preserves for
+resume, display, routing, and diagnostics.
 
 ```text
 SessionMetadata {
-  title?: string
-  display_name?: string
-  cwd?: string
-  model_provider?: string
-  model?: string
-  custom?: map<string, json>
+    title?:          string
+    display_name?:   string
+    cwd?:            string
+    model_provider?: string
+    model?:          string
+    custom?:         map<string, json>
 }
 ```
 
-`title` and `display_name` are user/surface-facing labels. They are optional.
+`cwd` records the working directory associated with the session. Local CLI
+sessions often have one; gateway, cron, browser, or eval sessions may not. A
+missing `cwd` must not make a session invalid.
 
-`cwd` records the working directory associated with the session when the runtime
-or surface has a meaningful one. Local CLI sessions often do; gateway, cron,
-browser, remote-backend, imported, or eval sessions may not. A missing `cwd`
-must not make a session invalid.
+`model_provider` and `model` record the model identity when known. They are
+metadata for inspection and diagnostics; they do not make the session service a
+model adapter.
 
-`model_provider` and `model` record the model identity associated with the
-session when known. They are metadata for inspection, resume, and diagnostics;
-they do not make the session service a model adapter.
+`custom` is an implementation-extension map. The service preserves it but does
+not interpret it.
 
-`custom` is an implementation-extension map for metadata that should be
-preserved by the session service but is not part of the base shared vocabulary.
-
-The base mutation model treats `set_metadata` as replacement of the metadata
-object supplied by the caller, not a field-level merge, unless a richer service
-surface advertises merge semantics.
+`set_metadata` replaces the entire metadata object. It is not a field-level
+merge unless a richer service advertises merge semantics.
 
 ## Usage Surface
 
-The session capability preserves usage state because session continuity includes
-the runtime-visible accounting needed for diagnostics, continuation decisions,
-context pressure, and user surfaces.
+The session preserves runtime-visible accounting for diagnostics, continuation
+decisions, context pressure, and user surfaces.
 
 ```text
 SessionUsage {
-  char_count
-  last_prompt_tokens: TokenCount
-  last_output_tokens: TokenCount
-  total_input_tokens: TokenCount
-  total_output_tokens: TokenCount
-  total_reasoning_tokens: TokenCount
-  cache_read_tokens: TokenCount
-  cache_write_tokens: TokenCount
-  context_window_tokens: TokenCount
-  last_context_used_pct
-  api_call_count
+    char_count
+    last_prompt_tokens:        TokenCount
+    last_output_tokens:        TokenCount
+    total_input_tokens:        TokenCount
+    total_output_tokens:       TokenCount
+    total_reasoning_tokens:    TokenCount
+    cache_read_tokens:         TokenCount
+    cache_write_tokens:        TokenCount
+    context_window_tokens:     TokenCount
+    last_context_used_pct
+    api_call_count
 }
 
 TokenCount {
-  value
-  source
+    value
+    source
 }
 
 TokenCountSource = char_estimate | tokenizer | provider
 ```
 
-`char_count` is the total stored textual size available for cheap diagnostics
-and rough pressure checks. Each token-valued field uses `TokenCount` so the
-session records both the value and whether it came from a character estimate, a
-tokenizer, or a provider. `last_context_used_pct` records the most recent known
-fraction of the model context window used. `api_call_count` records the number
-of model API calls accounted to the session.
+Each token-valued field uses `TokenCount` so the session records both the value
+and whether it came from a character estimate, a tokenizer, or a provider.
+Unknown values may be zero. `last_context_used_pct` records the most recent
+known fraction of the model context window used.
 
-Unknown numeric usage values may be zero. Token counts identify their source so
-a runtime or surface can distinguish rough estimates from tokenizer- or
-provider-supplied values. Token accounting belongs to this session-level usage
-surface; it is not required on every conversation record.
+`set_usage` replaces the entire usage object. It is not a field-level merge.
 
-Appending records may update usage best-effort. A model adapter or runtime may
-later replace the usage object through `session.mutate` with provider-verified
-usage.
+## Session Record
 
-## Session Record Surface
-
-The base contract does not prescribe an internal transcript format, but ordered
-records returned by `session.read` or embedded in a materialized continuation
-must expose these top-level fields:
+A session record is the base unit of the conversation log.
 
 ```text
 SessionRecord {
-  id
-  refs[]
-  kind
-  role?
-  text
-  created_at
-  updated_at
+    id          — required, stable record identity
+    turn_id     — assigned by the session service, groups records into turns
+    kind        — required: message | tool_call | tool_result | system_note
+    role        — required when kind=message: user | assistant | system
+    text        — canonical content, required for message and tool_result records
+    refs        — optional pre-resolved context references
+    tool_calls  — required for tool_call records: list of ToolCall
+    call_id     — required for tool_result records, links to the originating tool_call
+    created_at  — assigned by the session service
 }
-
-MessageRole = user | assistant | system
 ```
 
-`id` is required because records need a stable identity independent of array
-position. References, provenance, diagnostics, and richer advertised mutation
-surfaces may use it to address one particular record. The service may assign it
-when the caller does not provide one and may reject a caller-supplied ID that
-would collide within the session.
+`id` is a stable record identity assigned by the service. It is independent of
+array position.
 
-Array position expresses canonical record order in the base contract.
-Implementations may maintain internal sequence numbers, but the base record
-does not expose one because it has no sequence-addressed read, pagination, or
-range operation.
+`turn_id` groups records into turns. The session service infers turn boundaries
+from the record stream — a user message opens a new turn, and all subsequent
+records belong to that turn until the next user message. The caller does not
+provide turn_id; the service owns the grouping algorithm.
 
-`refs` is required, though it may be empty, so callers always receive one
-unambiguous reference collection. Its values are pre-resolved references
-associated with the record. They may point to files, URLs, artifacts, memory
-records, prior messages, or other externally addressable material.
+`kind` identifies the record category. The base kinds are `message`,
+`tool_call`, `tool_result`, and `system_note`.
 
-Sketch:
+`role` is required when `kind` is `message` and must be one of `user`,
+`assistant`, or `system`. It must be absent for other record kinds.
+
+`text` is the canonical record content. For a message record, it is the
+conversational text. For a tool_result record, it is the tool's output. For a
+tool_call record, it is absent — the structured `tool_calls` field carries the
+invocation.
+
+`refs` are pre-resolved context references. A ref is a pointer from a record to
+external material — a file, URL, artifact, or other session record. The session
+service stores refs; it does not resolve, fetch, or validate them. Callers set
+refs before writing the record.
 
 ```text
 ContextRef {
-  kind
-  target
+    kind      — required: file | directory | url | artifact | memory | session_record
+    target    — required, identity of the referenced material
+    label?    — optional human-readable label
+    range?    — optional sub-range within the target
+    metadata? — optional extension map
 }
 ```
 
-`kind` is required so every service interprets a target consistently rather
-than independently guessing from its string form. Base descriptive kinds are:
+`tool_calls` carries the structured tool invocation for `kind=tool_call`
+records. Each entry names the tool, its arguments, and the call identity.
 
 ```text
-file
-directory
-url
-artifact
-memory
-session_record
+ToolCall {
+    id        — call identity (provider-assigned or service-assigned)
+    name      — tool name
+    arguments — tool arguments as key-value pairs
+    tool_id?  — optional registered tool identifier
+}
 ```
 
-Unknown namespaced kinds may be preserved. `target` is the required address or
-identity of the referenced material. Labels, ranges, and arbitrary metadata are
-not part of the base reference shape until a concrete cross-capability consumer
-requires them.
+`call_id` on a `tool_result` record links back to the `ToolCall.id` of the
+originating `tool_call` record.
 
-The session service stores and returns refs; it does not have to parse raw text,
-read files, fetch URLs, or decide how refs become model context. Frontends,
-gateways, runtimes, or specialized providers may create refs before passing
-records to the session service.
+`created_at` records when the record was accepted by the service.
 
-`kind` identifies the record category. The base record kinds are:
+## Turn Grouping
 
-```text
-message
-tool_call
-tool_result
-system_note
-```
+The session service owns turn grouping. The base algorithm: a `write_message`
+with `role=user` opens a new turn. Every subsequent record — assistant
+messages, tool calls, tool results, system notes — inherits that turn until the
+next user message.
 
-If omitted in an append operation, a service may default `kind` to `message`.
-It is required on returned records because role alone cannot distinguish a
-message from a tool call, tool result, or system note.
+This is an implementation detail, not a contract action. The observable
+guarantee is that records carry a `turn_id` assigned by the service, and the
+assignment is consistent with the algorithm above.
 
-`role` is required when `kind` is `message` and must be absent for other base
-record kinds. The base roles are `user`, `assistant`, and `system`. Creation
-from a user prompt must create an initial `message` record with role `user`.
+Autonomous turns (loops without user messages) are out of scope for v0.
 
-A `message` with role `system` may preserve system-prompt material that a
-session implementation exposes as part of its transcript. A `system_note` is
-different: it is session-visible text without an implied model-facing role.
-The base contract does not accept implementation-defined roles; role
-extensibility can be added when a concrete cross-capability need establishes
-its semantics.
+## Actions
 
-`text` is required canonical conversation content. It is normalized text, not
-provider-formatted replay data. Provider-native model payloads belong to the
-model-adapter or runtime-event surfaces, and structured tool payloads belong to
-the tool invocation and execution surfaces. A session service may persist those
-privately, but other capabilities cannot assume they are present in a session
-record.
-
-`created_at` records when the record was accepted. `updated_at` initially equals
-`created_at` and records the most recent accepted edit when a richer session
-service advertises editable records. The base actions do not currently expose a
-record-edit operation, but the record shape allows such an implementation
-without inventing a second record type.
-
-The base record surface intentionally does not include a first-class
-`touched_paths` field. Tool-derived path evidence can remain runtime-local or
-context-provider request metadata until real implementations show that it needs
-canonical session persistence. If a path is an explicit user-facing reference,
-it should normally be represented through `refs`.
-
-## Required Actions
+Every response carries `{id, version, state}`. Action-specific fields are
+additional.
 
 ### `session.create`
 
 Start a new session from an initial user prompt.
 
-Base input payload:
-
-```json
-{
-  "prompt": "user prompt text",
-  "refs": [],
-  "metadata": {
-    "title": "optional title",
-    "display_name": "optional display label",
-    "cwd": "optional working directory",
-    "model_provider": "optional provider id",
-    "model": "optional model id",
-    "custom": {}
-  }
-}
-```
-
-The prompt is required after trimming whitespace. The base runtime should not
-create an empty interactive session.
-
-The accepted prompt becomes the first ordered user message in the session.
-Creation returns a session with:
-
-- stable session `id`
-- `version` of `1`
-- `state` of `active`
-- `created_at` and `updated_at`
-- supplied metadata
-- initial usage/accounting state
-- exactly one initial record with `kind` of `message`, `role` of `user`, and
-  `text` equal to the prompt
-
-Supplied `refs` annotate that first user record when present.
-
-Terminal events:
-
-- `session.created`
-- `session.create_rejected`
-
-### `session.resume`
-
-Attach the current runtime to an existing active session.
-
-Base input payload:
-
-```json
-{
-  "id": "session id"
-}
-```
-
-This is the action used when a CLI resumes a session, a UI opens a prior
-conversation, or a gateway resolves an incoming message to an existing session.
-
-Resume returns the current session object. It must not mutate the session,
-change `updated_at`, or create accidental continuity when the session is
-missing.
-
-Deleted sessions are not resumable in the base contract.
-
-Terminal events:
-
-- `session.resumed`
-- `session.resume_rejected`
-
-### `session.mutate`
-
-Apply a coherent mutation to an active session.
-
-Base input payload:
-
-```json
-{
-  "id": "session id",
-  "idempotency_key": "optional duplicate-protection key",
-  "ops": [
-    {
-      "type": "append_record",
-      "record": {}
-    },
-    {
-      "type": "set_metadata",
-      "metadata": {}
-    },
-    {
-      "type": "set_usage",
-      "usage": {}
-    }
-  ]
-}
-```
-
-`id` is required. `ops` must be non-empty.
-
-The base mutation operations are:
-
-- `append_record`: append one record to the ordered session record.
-- `set_metadata`: replace the session metadata object.
-- `set_usage`: replace the session usage object.
-
-Each operation must include the payload required by its type. Unknown operation
-types are invalid mutations unless a richer advertised surface adds them.
-
-The service must either apply the mutation coherently or reject it explicitly.
-For a non-idempotent accepted mutation, the service advances the session
-version once for the whole mutation, updates `updated_at`, and returns the
-updated session object.
-
-For appended records, the service assigns any missing base fields it owns, such
-as `id`, `kind`, `created_at`, and `updated_at`. Accepted record mutations
-preserve supplied top-level `refs` unless the service explicitly rejects or
-redacts them.
-
-If `idempotency_key` is supplied, the service must prevent the same mutation
-from being applied twice to the same session. A repeat request may return the
-current session state rather than replaying the exact historical direct-call
-return, unless the service advertises stronger event replay semantics.
-
-The base mutation payload does not include an expected-version guard. Stronger
-compare-and-swap behavior can be advertised by a richer service surface if a
-harness actually uses it.
-
-Deleted sessions cannot be mutated in the base contract.
-
-Terminal events:
-
-- `session.mutated`
-- `session.mutation_rejected`
-
-### `session.read`
-
-Return the canonical ordered session record visible to the caller.
-
-Base input payload:
-
-```json
-{
-  "id": "session id"
-}
-```
-
-This is the canonical user-facing/session-facing history read. Implementations
-may redact or filter for policy reasons, but redaction must be explicit in the
-result.
-
-Read returns a session object and must not mutate session state. Records must be
-returned in canonical session order.
-
-Deleted sessions are not readable in the base contract unless a richer service
-surface advertises tombstone or audit reads explicitly.
-
-Terminal events:
-
-- `session.read_completed`
-- `session.read_rejected`
-
-### `session.materialize`
-
-Return the current continuation state needed by the runtime.
-
-Base input payload:
-
-```json
-{
-  "id": "session id"
-}
-```
-
-Base terminal payload:
+Input:
 
 ```text
-MaterializedSession {
-  session_id
-  version
-  state
-  kind
-  metadata: SessionMetadata
-  usage: SessionUsage
-  records: SessionRecord[]
+{
+    prompt:   string           — required, non-empty after trimming
+    metadata?: SessionMetadata — optional session metadata
+    refs?:    ContextRef[]     — optional refs for the initial user message
 }
-
-ContinuationKind = ordered_records
 ```
 
-For `session.v0.2`, a base service must support `ordered_records`
-materialization. Richer services may advertise additional continuation kinds,
-such as a compacted state or provider-native thread reference, but the `kind`
-field must make that explicit so the runtime does not guess.
+The prompt becomes the first ordered record: `kind=message`, `role=user`,
+`text=prompt`. The service assigns `id`, `turn_id`, and `created_at`.
 
-Materialization returns continuation state derived from a known active session
-version. It must not mutate session state.
+Returns: `{id, version: 1, state: "active"}`
 
-Deleted sessions cannot be materialized in the base contract.
+Terminal events: `session.created` | `session.create_rejected`
 
-Terminal events:
+### `session.get`
 
-- `session.materialized`
-- `session.materialization_rejected`
+Return the current session by ID.
+
+Input: `{id: string}`
+
+Returns: `{id, version, state, metadata, usage, records}`
+
+Read-only. Must not mutate session state. Records are returned in canonical
+order. Deleted sessions are rejected.
+
+Terminal events: `session.retrieved` | `session.retrieve_rejected`
 
 ### `session.delete`
 
 Delete a session when policy allows it.
 
-Base input payload:
+Input: `{id: string}`
 
-```json
+Soft delete: sets `state=deleted`, sets `deleted_at`, advances version. An
+already-deleted session returns the current state without another version bump.
+After deletion, `get` and all write actions reject.
+
+Returns: `{id, version, state: "deleted"}`
+
+Terminal events: `session.deleted` | `session.delete_rejected`
+
+### `session.write_message`
+
+Write a conversational message to the session.
+
+Input:
+
+```text
 {
-  "id": "session id"
+    session_id: string        — target session
+    text:       string        — required, non-empty message content
+    role:       string        — required: user | assistant | system
+    refs?:      ContextRef[]  — optional context references
 }
 ```
 
-Deletion may be unsupported, denied, soft, or hard depending on the
-implementation and deployment policy. The result must say what happened.
+The service constructs a record with `kind=message` and the provided `text`,
+`role`, and `refs`. It assigns `id`, `turn_id`, and `created_at`. A user
+message opens a new turn; an assistant or system message extends the current
+turn.
 
-For the base soft-delete behavior, an accepted delete changes an active session
-to `deleted`, sets `deleted_at`, advances the session version, updates
-`updated_at`, and returns the deleted session object. After deletion, resume,
-read, materialize, and mutate reject the session as deleted.
+Advances version. Rejects deleted sessions.
 
-Deleting an already-deleted session may return the current deleted session
-without another state change.
+Returns: `{id, record_id, version, state}`
 
-Terminal events:
+Terminal events: `session.message_written` | `session.message_write_rejected`
 
-- `session.deleted`
-- `session.delete_rejected`
+### `session.write_tool_call`
+
+Write a tool invocation record.
+
+Input:
+
+```text
+{
+    session_id: string       — target session
+    name:       string       — required, tool name
+    arguments:  map          — required, tool arguments
+    call_id:    string       — required, provider-assigned call identity
+    tool_id?:   string       — optional registered tool identifier
+    refs?:      ContextRef[] — optional context references
+}
+```
+
+The service constructs a record with `kind=tool_call` and the provided
+invocation fields. It assigns `id`, `turn_id`, and `created_at`. Extends the
+current turn.
+
+Advances version. Rejects deleted sessions.
+
+Returns: `{id, record_id, version, state}`
+
+Terminal events: `session.tool_call_written` | `session.tool_call_write_rejected`
+
+### `session.write_tool_result`
+
+Write a tool execution result.
+
+Input:
+
+```text
+{
+    session_id: string       — target session
+    text:       string       — required, tool output
+    call_id:    string       — required, links to the originating ToolCall.id
+    refs?:      ContextRef[] — optional context references (e.g. created files)
+}
+```
+
+The service constructs a record with `kind=tool_result` and the provided `text`
+and `call_id`. It assigns `id`, `turn_id`, and `created_at`. Extends the
+current turn.
+
+Advances version. Rejects deleted sessions.
+
+Returns: `{id, record_id, version, state}`
+
+Terminal events: `session.tool_result_written` | `session.tool_result_write_rejected`
+
+### `session.write_system_note`
+
+Write a session-visible annotation without a model-facing role.
+
+Input:
+
+```text
+{
+    session_id: string       — target session
+    text:       string       — required, note content
+    refs?:      ContextRef[] — optional context references
+}
+```
+
+The service constructs a record with `kind=system_note`. It assigns `id`,
+`turn_id`, and `created_at`. Extends the current turn.
+
+Advances version. Rejects deleted sessions.
+
+Returns: `{id, record_id, version, state}`
+
+Terminal events: `session.system_note_written` | `session.system_note_write_rejected`
+
+### `session.write_record`
+
+Write an arbitrary record with full caller control over the record shape. This
+is the generic escape hatch for record kinds not covered by the dedicated
+write actions and for callers that already have a complete record shape
+(compaction, replay, import).
+
+Input:
+
+```text
+{
+    session_id: string        — target session
+    record:     SessionRecord — required, caller-provided record
+}
+```
+
+The service assigns `id`, `turn_id`, and `created_at` if the caller does not
+provide them. The service may reject records with unknown `kind` values or
+invalid field combinations.
+
+Advances version. Rejects deleted sessions.
+
+Returns: `{id, record_id, version, state}`
+
+Terminal events: `session.record_written` | `session.record_write_rejected`
+
+### `session.set_metadata`
+
+Replace the session metadata object.
+
+Input:
+
+```text
+{
+    session_id: string          — target session
+    metadata:   SessionMetadata — required, replacement metadata
+}
+```
+
+Full replacement, not a merge. Advances version. Rejects deleted sessions.
+
+Returns: `{id, version, state}`
+
+Terminal events: `session.metadata_set` | `session.metadata_set_rejected`
+
+### `session.set_usage`
+
+Replace the session usage object.
+
+Input:
+
+```text
+{
+    session_id: string       — target session
+    usage:      SessionUsage — required, replacement usage
+}
+```
+
+Full replacement, not a merge. Advances version. Rejects deleted sessions.
+
+Returns: `{id, version, state}`
+
+Terminal events: `session.usage_set` | `session.usage_set_rejected`
 
 ## Unsupported Requests
 
 If a caller asks for an action the service does not support, the outcome should
 be recorded as an explicit unsupported result, not as an unknown exception.
 
-Example:
-
 ```text
 command: session.branch
 terminal event: capability.unsupported
 ```
 
-This lets UIs, model-facing tools, memory, compaction, and experiments request
-richer behavior without hardcoding service-specific APIs.
-
 ## Invariants
 
-- A created or resumed session has a stable session identity until deletion or
-  until the service explicitly reports otherwise.
-- Creation from a prompt creates exactly one initial user message record.
-- A created session starts active with version `1`.
+- A created session starts active with version `1` and exactly one user message
+  record.
+- A session has a stable `id` until deletion or until the service explicitly
+  reports otherwise.
 - Session versions are monotonic for accepted state changes.
-- Resume, read, and materialize must not mutate session state.
-- Mutations are applied atomically and ordered by the session service.
-- A successful non-idempotent mutation has a new observable session version.
-- A rejected mutation must not pretend to have changed session state.
-- Repeating an idempotent mutation must not append duplicate records or apply
-  duplicate state changes.
-- `session.read` returns the service's canonical ordered record for the caller.
-- `session.materialize` returns continuation state derived from a known session
-  version.
-- Accepted record mutations preserve supplied top-level `refs` unless the
-  service explicitly rejects or redacts them.
+- `get` must not mutate session state.
+- `get` returns records in canonical session order.
+- Every write advances the session version and updates `updated_at`.
+- A rejected write must not change session state.
+- `write_message` with `role=user` opens a new turn for subsequent records.
+- `turn_id` is assigned by the session service; the caller does not provide it.
+- Accepted records preserve supplied `refs` unless the service explicitly
+  rejects or redacts them.
 - Missing `cwd` metadata is valid.
-- Failed resume must not silently create accidental continuity.
-- Deleted sessions are not resumable, readable, materializable, or mutable in
-  the base contract.
-- Failed compaction application, via `session.mutate`, must not silently drop
-  usable session state.
-- Model-facing tools published by the session service are part of its advertised
-  surface and should route back through the mediator.
+- Deleted sessions are not retrievable or writable in the base contract.
+- `set_metadata` and `set_usage` are full replacements, not merges.
 
 ## Failure Semantics
 
 Expected failure categories:
 
-- invalid session input
+- invalid session input (missing or empty required fields)
 - missing create prompt
-- invalid or missing session reference
 - session not found
 - session deleted
-- invalid mutation
+- invalid record (unknown kind, missing required fields for kind)
 - persistence unavailable
-- read unavailable
-- materialization unavailable
 - delete denied
 - action unsupported
-- policy denied
 
-The exact error payload can evolve. The required behavior is that failures are
-typed enough for the runtime or surface to decide whether to retry, degrade,
-ask the user, or stop.
-
-For the current reference behavior:
-
-- empty or whitespace-only create prompts fail as invalid input
-- missing IDs fail as invalid input
-- missing sessions fail as not found
-- deleted sessions fail as deleted for resume, read, materialize, and mutate
-- empty mutation op lists fail as invalid mutation
-- mutation ops without their required payload fail as invalid mutation
-- unknown mutation op types fail as invalid mutation
+Failures are typed enough for the runtime or surface to decide whether to
+retry, degrade, ask the user, or stop.
 
 ## Compaction Interaction
 
 Compaction is not part of the session capability.
 
 The compaction service owns the transform strategy. The session service owns the
-record of whatever continuation state is accepted back into the session.
+record of whatever state is accepted back into the session through
+`write_record` or a richer advertised surface.
 
 ## Memory Interaction
 
@@ -602,52 +506,48 @@ Memory services should not need to know the concrete session implementation.
 The runtime or mediator should pass session observations deliberately:
 
 - session created
-- turn/session mutated
-- transcript or ordered record read, when allowed
+- records written
 - session deleted
 
 If a memory service wants full transcript access, it should request
-`session.read` through the mediator. If the session service rejects or does not
-support the needed read shape, memory can degrade or fail according to its own
-contract.
+`session.get` through the mediator.
 
 ## Lifecycle
 
-The base lifecycle is intentionally simple:
-
 ```text
-created -> active/resumable -> mutated many times -> deleted
+created -> active -> mutated many times -> deleted
 ```
 
-Deletion is terminal for resume/read/materialize/mutate in the base surface.
-Richer services may offer restore, audit read, branch, fork, archive, or
-expiration semantics by advertising additional actions and states.
+Deletion is terminal for `get` and all write actions in the base surface.
+Richer services may offer restore, branch, fork, archive, or expiration
+semantics by advertising additional actions and states.
 
 ## Minimal Test Fixtures
 
 A service implementing the base session contract should be testable with:
 
-- advertise `session.v0.2`
-- create a session from a user prompt and receive a stable session identity,
-  version `1`, active state, and one initial user message record
+- advertise `session.v0.3`
+- create a session from a prompt and receive a stable `id`, version `1`, and
+  `state: "active"`
 - reject an empty or whitespace-only creation prompt
-- create or mutate with optional metadata fields such as `title`,
-  `display_name`, `cwd`, `model_provider`, `model`, and `custom`
-- mutate with a record that has top-level `refs`
-- preserve message records with roles `user`, `assistant`, and `system`
-- reject a base `message` record with an unsupported role
-- read the ordered record back with supplied `refs` preserved
-- return read records in canonical session order
-- materialize continuation state with kind `ordered_records`
-- resume the session by reference without mutating it
-- reject resume, read, and materialize for a missing session
-- reject invalid mutations, including missing ops and missing required op
-  payloads
-- append a record and update session usage accounting with an identified token
-  source
-- replace usage with provider/tokenizer-supplied accounting through
-  `set_usage`
-- avoid double-applying the same idempotent mutation
-- delete a session and make it unresumable, unreadable, unmaterializable, and
-  immutable through the base surface
-- reject an unsupported richer action such as `session.branch`
+- `get` the session with one user message record, ordered
+- `get` rejects a deleted session
+- `get` rejects a missing session
+- `write_message` with role `user` opens a new turn
+- `write_message` with role `assistant` extends the current turn
+- consecutive `write_message` calls produce consecutive turn_ids for user
+  messages and consistent turn_ids for assistant messages within a turn
+- `write_tool_call` and `write_tool_result` extend the current turn
+- `write_tool_result` with a `call_id` that matches a prior `ToolCall.id`
+- `write_system_note` extends the current turn
+- `write_record` accepts valid records of known kinds
+- `write_message` with `refs` preserves them on `get`
+- `set_metadata` replaces the metadata object and is reflected on `get`
+- `set_usage` replaces the usage object and is reflected on `get`
+- version advances on every accepted write
+- version does not advance on `get`
+- delete an active session and verify `state: "deleted"` with version advanced
+- delete an already-deleted session without a second version bump
+- reject writes on a deleted session
+- reject `get` on a deleted session
+- reject an unsupported action such as `session.branch`

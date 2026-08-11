@@ -31,7 +31,7 @@ means.
 
 ## Drafted Contracts
 
-- session — `session.v0.2` — `docs/session-capability-contract.md`
+- session — `session.v0.3` — `docs/session-capability-contract.md`
 - context provider — `context_provider.v0.1` —
   `docs/context-provider-capability-contract.md`
 - tool invocation — `tool_invocation.v0` —
@@ -51,30 +51,38 @@ event model.
 
 Work in this order. Move each item forward as it lands.
 
-1. Finish the Hermes census follow-ups the drafted contracts already depend on:
+1. Implement `session.v0.3` changes across the Go codebase: update
+   `SessionStore` interface to replace `Resume`/`Read`/`Materialize`/`Mutate`
+   with `Get` and the dedicated write actions. Update the kernel's loop to use
+   `WriteMessage`/`WriteToolCall`/`WriteToolResult` instead of constructing
+   `MutationOp` envelopes. Update the context builder's record handling to
+   match the cleaned-up `SessionRecord` shape (remove `Seq`, `Raw`,
+   `CharCount`, `Tokens` references if any). The store implementation in
+   `internal/session/` must infer `turn_id` from the record stream.
+2. Finish the Hermes census follow-ups the drafted contracts already depend on:
    session lineage and replay in `hermes_state.py`, fallback and streaming
    interrupt behavior in `chat_completion_helpers.py`, plugin hooks, approval
    and checkpoint policy, gateway delivery constraints, memory providers, and
    eval/cron paths.
-2. Context builder (`context_builder.v0`) is implemented in
+3. Context builder (`context_builder.v0`) is implemented in
    `internal/contextbuilder/` — `estimate`, `assemble`, and `prepare` with
    test coverage. Wiring it into the harness now depends on the runtime-kernel
    contract. Sizing inputs remain for the next pass: `tool_invocation.v0`,
-   `context_provider.v0.1`, and `session.v0.2` do not yet accept token budgets
-   on `list_tools`, `get_context`, and `materialize`.
-3. Draft the runtime-kernel contract — the coherence point the other contracts
+   `context_provider.v0.1`, and `session.v0.3` do not yet accept token budgets
+   on `list_tools`, `get_context`, and `get`.
+4. Draft the runtime-kernel contract — the coherence point the other contracts
    reach into: turn lifecycle, ordering, budgets, cancellation, recovery, and
    replay invariants. The runtime kernel is the next capability in active
    work: its dossier material is captured in the model-invocation dossier
    ("Adjacent: Runtime Kernel"), and the kernel dossier and contract follow.
-4. Define the semantic event model as its own surface. Observability is a
+5. Define the semantic event model as its own surface. Observability is a
    pillar, so the append-only event log gets a first-class contract with replay
    semantics.
-5. Draft memory and compression as state transforms, with provenance and
+6. Draft memory and compression as state transforms, with provenance and
    non-blocking extraction semantics.
-6. Draft what a target slot looks like, even as a stub. Pin the shape of the
+7. Draft what a target slot looks like, even as a stub. Pin the shape of the
    objective surface before the harness optimizes against it.
-7. Build the first reference composition: direct mediator calls, primary and
+8. Build the first reference composition: direct mediator calls, primary and
    shadow services, and a replayable event log.
 
 ## Open Problems
