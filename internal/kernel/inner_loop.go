@@ -81,10 +81,10 @@ func runInnerLoop(
 		}
 
 		// Stream the model's output as it arrives (v0 delivers it in one shot).
-		if result.Content != "" {
+		if result.Content != "" && observer != nil {
 			observer.OnModelContent(result.Content)
 		}
-		if result.Reasoning != "" {
+		if result.Reasoning != "" && observer != nil {
 			observer.OnReasoning(result.Reasoning)
 		}
 
@@ -123,8 +123,10 @@ func runInnerLoop(
 		}
 
 		// Stream tool-call starts before execution.
-		for _, tc := range result.ToolCalls {
-			observer.OnToolCallStart(tc.Name, tc.Arguments)
+		if observer != nil {
+			for _, tc := range result.ToolCalls {
+				observer.OnToolCallStart(tc.Name, tc.Arguments)
+			}
 		}
 
 		// Execute the batch against the active catalog.
@@ -142,8 +144,10 @@ func runInnerLoop(
 		}
 
 		// Stream results and append them to the running transcript.
-		for _, r := range execResult.Results {
-			observer.OnToolResult(r)
+		if observer != nil {
+			for _, r := range execResult.Results {
+				observer.OnToolResult(r)
+			}
 		}
 		toolRecords := buildToolResultRecords(turnID, execResult.Results)
 		transcript = append(transcript, toolRecords...)
