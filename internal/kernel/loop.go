@@ -122,11 +122,31 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 	// --- Append accumulated records ---
 	if len(result.newRecords) > 0 {
 		for _, rec := range result.newRecords {
-			if _, err := k.session.WriteRecord(ctx, session.WriteRecordInput{
-				SessionID: sessionID,
-				Record:    rec,
-			}); err != nil {
-				return sessionID, fmt.Errorf("append inner loop records: %w", err)
+			switch rec.Kind {
+			case session.RecordToolResult:
+				text := ""
+				if rec.Text != nil {
+					text = *rec.Text
+				}
+				if _, err := k.session.WriteToolResult(ctx, session.WriteToolResultInput{
+					SessionID: sessionID,
+					Text:      text,
+					CallID:    rec.CallID,
+					Refs:      rec.Refs,
+				}); err != nil {
+					return sessionID, fmt.Errorf("write tool result: %w", err)
+				}
+			case session.RecordToolCall:
+				// Handle tool_call if any appear in newRecords (unlikely today, but be safe)
+				if _, err := k.session.WriteToolCall(ctx, session.WriteToolCallInput{
+					SessionID: sessionID,
+					Name:      rec.ToolCalls[0].Name,
+					Arguments: rec.ToolCalls[0].Arguments,
+					CallID:    rec.CallID,
+					Refs:      rec.Refs,
+				}); err != nil {
+					return sessionID, fmt.Errorf("write tool call: %w", err)
+				}
 			}
 		}
 	}

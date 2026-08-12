@@ -57,12 +57,14 @@ Work in this order. Move each item forward as it lands.
    `WriteSystemNote`, `WriteRecord`, `SetMetadata`, `SetUsage`); `Resume`,
    `Read`, `Materialize`, and `Mutate` are gone. The kernel loop writes through
    the new actions (user and assistant messages via `WriteMessage`, inner-loop
-   tool results via `WriteRecord`, the built prefix via `SetMetadata`) and
-   reloads the session with `Get` after `Create`. The store infers `turn_id`
-   from the record stream and persists `tool_calls` and `call_id` alongside
-   it. The context-builder record-shape cleanup (removing `Seq`, `Raw`,
-   `CharCount`, `Tokens` references) was deferred: those fields stay
-   implementation-private on `SessionRecord` for now.
+   tool results via the dedicated `WriteToolResult`/`WriteToolCall` writes, the
+   built prefix via `SetMetadata`) and reloads the session with `Get` after
+   `Create`. The store infers `turn_id` from the record stream and persists
+   `tool_calls` and `call_id` alongside it. The dead `mutate` path is fully
+   removed: `session_mutation_results`, `mutationAlreadyApplied`,
+   `insertMutationResult`, and `ErrInvalidMutation` are gone. `Seq`, `Raw`,
+   `CharCount`, and `Tokens` stay implementation-private on `SessionRecord`
+   (`json:"-"`) and no longer leak into `Get` output.
 2. Finish the Hermes census follow-ups the drafted contracts already depend on:
    session lineage and replay in `hermes_state.py`, fallback and streaming
    interrupt behavior in `chat_completion_helpers.py`, plugin hooks, approval
