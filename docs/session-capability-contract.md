@@ -144,7 +144,7 @@ and whether it came from a character estimate, a tokenizer, or a provider.
 Unknown values may be zero. `last_context_used_pct` records the most recent
 known fraction of the model context window used.
 
-`set_usage` replaces the entire usage object. It is not a field-level merge.
+`set_usage` merges the provided fields into the current usage object. Fields present in the input overwrite the current values; absent fields are left untouched. The kernel owns session usage — it is the sole writer. The store does not auto-update usage on record writes.
 
 ## Session Record
 
@@ -429,18 +429,21 @@ Terminal events: `session.metadata_set` | `session.metadata_set_rejected`
 
 ### `session.set_usage`
 
-Replace the session usage object.
+Update the session usage object.
 
 Input:
 
 ```text
 {
     session_id: string       — target session
-    usage:      SessionUsage — required, replacement usage
+    usage:      SessionUsage — usage fields to merge
 }
 ```
 
-Full replacement, not a merge. Advances version. Rejects deleted sessions.
+Merges provided fields into the current usage object. Fields present in the
+input overwrite current values; absent fields are left untouched. This lets
+callers supply provider-verified token counts without needing to carry every
+auto-computed field. Advances version. Rejects deleted sessions.
 
 Returns: `{id, version, state}`
 
@@ -473,7 +476,8 @@ terminal event: capability.unsupported
   rejects or redacts them.
 - Missing `cwd` metadata is valid.
 - Deleted sessions are not retrievable or writable in the base contract.
-- `set_metadata` and `set_usage` are full replacements, not merges.
+- `set_metadata` is a full replacement, not a merge.
+- `set_usage` is a merge: provided fields overwrite, absent fields are preserved.
 
 ## Failure Semantics
 

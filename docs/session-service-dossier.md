@@ -192,6 +192,14 @@ These decisions shaped the v0.3 surface. Source: collaborator session
   The contract already stated other capabilities cannot assume it is present.
   Services may store it privately.
 
+- **`set_usage` uses merge semantics, usage is solely kernel-owned.** The store
+  no longer auto-updates session usage on record writes. The kernel is the sole
+  writer: it reads current usage, overlays provider-verified token counts, and
+  writes back via `set_usage`. Merge semantics let the kernel supply only the
+  fields it changed without carrying every other field. Split ownership by
+  field, no coordination needed. The auto-update approach was removed to avoid
+  two concurrent update paths for the same object.
+
 ## Open Questions
 
 - **Idempotency.** The v0.2 `mutate` action had idempotency key support.
