@@ -15,7 +15,7 @@ import (
 
 const builtPrefixKey = "built_prefix"
 
-// runTurn executes one full turn: session create/resume, setup sequence,
+// runTurn executes one full turn: session create/get, setup sequence,
 // inner loop, and teardown. On new sessions, sessionID is empty and the
 // kernel creates one. Returns the session ID and any error.
 func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) (string, error) {
@@ -26,33 +26,30 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 	isNew := sessionID == ""
 
 	// --- Session creation or resumption ---
-	var sess *session.Session
 	if isNew {
-		var err error
-		sess, err = k.session.Create(ctx, session.CreateInput{
+		created, err := k.session.Create(ctx, session.CreateInput{
 			Prompt: input.Messages[0],
-			TurnID: k.turnID,
 		})
 		if err != nil {
 			return "", fmt.Errorf("session create: %w", err)
 		}
-		sessionID = sess.ID
+		sessionID = created.ID
 
 		// Batch-append subsequent messages.
 		if err := k.appendUserMessages(ctx, sessionID, input.Messages[1:]); err != nil {
 			return sessionID, err
 		}
 	} else {
-		var err error
-		sess, err = k.session.Resume(ctx, session.ResumeInput{ID: sessionID})
-		if err != nil {
-			return sessionID, fmt.Errorf("session resume: %w", err)
-		}
-
 		// Batch-append continue messages.
 		if err := k.appendUserMessages(ctx, sessionID, input.Messages); err != nil {
 			return sessionID, err
 		}
+	}
+
+	// Load the full session after the writes.
+	sess, err := k.session.Get(ctx, session.GetInput{ID: sessionID})
+	if err != nil {
+		return sessionID, fmt.Errorf("session get: %w", err)
 	}
 
 	// --- Model resolution ---
@@ -110,8 +107,8 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 		}
 	}
 
-	// --- Materialize ---
-	materialized, err := k.materializeWithRetry(ctx, sessionID)
+	// --- Transcript ---
+	transcript, err := k.getWithRetry(ctx, sessionID)
 	if err != nil {
 		return sessionID, err
 	}
@@ -119,36 +116,27 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 	// --- Inner loop ---
 	result := runInnerLoop(ctx, k.cfg, k.tools, k.model, k.builder, k.observer,
 		sessionID, k.turnID, model, builtPrefix,
-		materialized.Records, &catalog, outputBudget, bundles,
+		transcript.Records, &catalog, outputBudget, bundles,
 	)
 
 	// --- Append accumulated records ---
 	if len(result.newRecords) > 0 {
-		ops := make([]session.MutationOp, len(result.newRecords))
-		for i, rec := range result.newRecords {
-			rec := rec
-			ops[i] = session.MutationOp{
-				Type:   session.MutationAppendRecord,
-				Record: &rec,
+		for _, rec := range result.newRecords {
+			if _, err := k.session.WriteRecord(ctx, session.WriteRecordInput{
+				SessionID: sessionID,
+				Record:    rec,
+			}); err != nil {
+				return sessionID, fmt.Errorf("append inner loop records: %w", err)
 			}
-		}
-		if _, err := k.session.Mutate(ctx, session.MutateInput{
-			ID:  sessionID,
-			Ops: ops,
-		}); err != nil {
-			return sessionID, fmt.Errorf("append inner loop records: %w", err)
 		}
 	}
 
-	// --- Append final assistant record ---
+	// --- Append final assistant message ---
 	if result.finalContent != "" {
-		finalRec := buildAssistantRecord(k.turnID, result.finalContent)
-		if _, err := k.session.Mutate(ctx, session.MutateInput{
-			ID: sessionID,
-			Ops: []session.MutationOp{{
-				Type:   session.MutationAppendRecord,
-				Record: &finalRec,
-			}},
+		if _, err := k.session.WriteMessage(ctx, session.WriteMessageInput{
+			SessionID: sessionID,
+			Text:      result.finalContent,
+			Role:      "assistant",
 		}); err != nil {
 			return sessionID, fmt.Errorf("append final record: %w", err)
 		}
@@ -187,25 +175,22 @@ func loadBuiltPrefix(sess *session.Session) (contextbuilder.BuiltPrefix, bool) {
 	return prefix, true
 }
 
-// storeBuiltPrefix writes the BuiltPrefix into session metadata.
+// storeBuiltPrefix writes the BuiltPrefix into session metadata. set_metadata
+// is a full replacement, so the whole metadata object is rebuilt from the
+// current session with the prefix added.
 func (k *Kernel) storeBuiltPrefix(ctx context.Context, sessionID string, sess *session.Session, prefix contextbuilder.BuiltPrefix) error {
 	raw, err := json.Marshal(prefix)
 	if err != nil {
 		return fmt.Errorf("marshal built prefix: %w", err)
 	}
-	custom := sess.Metadata.Custom
-	if custom == nil {
-		custom = make(map[string]json.RawMessage)
+	metadata := sess.Metadata
+	if metadata.Custom == nil {
+		metadata.Custom = make(map[string]json.RawMessage)
 	}
-	custom[builtPrefixKey] = raw
-	_, err = k.session.Mutate(ctx, session.MutateInput{
-		ID: sessionID,
-		Ops: []session.MutationOp{{
-			Type: session.MutationSetMetadata,
-			Metadata: &session.SessionMetadata{
-				Custom: custom,
-			},
-		}},
+	metadata.Custom[builtPrefixKey] = raw
+	_, err = k.session.SetMetadata(ctx, session.SetMetadataInput{
+		SessionID: sessionID,
+		Metadata:  metadata,
 	})
 	return err
 }
@@ -314,38 +299,30 @@ func (k *Kernel) assembleWithRetry(ctx context.Context, sessionID, model string,
 	return contextbuilder.BuiltPrefix{}, fmt.Errorf("assemble failed: %w", lastErr)
 }
 
-func (k *Kernel) materializeWithRetry(ctx context.Context, sessionID string) (*session.MaterializedSession, error) {
+func (k *Kernel) getWithRetry(ctx context.Context, sessionID string) (*session.Session, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		materialized, err := k.session.Materialize(ctx, session.MaterializeInput{ID: sessionID})
+		sess, err := k.session.Get(ctx, session.GetInput{ID: sessionID})
 		if err == nil {
-			return materialized, nil
+			return sess, nil
 		}
 		lastErr = err
 	}
-	return nil, fmt.Errorf("materialize failed: %w", lastErr)
+	return nil, fmt.Errorf("get failed: %w", lastErr)
 }
 
-// appendUserMessages batch-appends a list of user messages to the session
-// in a single Mutate call. Each message becomes a SessionRecord with kind
-// message, role user.
+// appendUserMessages writes a list of user messages to the session. Each
+// message becomes a message record with role user; the session service
+// assigns record identity and turn grouping.
 func (k *Kernel) appendUserMessages(ctx context.Context, sessionID string, messages []string) error {
-	if len(messages) == 0 {
-		return nil
-	}
-	ops := make([]session.MutationOp, len(messages))
-	for i, msg := range messages {
-		msg := msg
-		ops[i] = session.MutationOp{
-			Type: session.MutationAppendRecord,
-			Record: &session.SessionRecord{
-				TurnID: k.turnID,
-				Kind:   session.RecordMessage,
-				Role:   "user",
-				Text:   &msg,
-			},
+	for _, msg := range messages {
+		if _, err := k.session.WriteMessage(ctx, session.WriteMessageInput{
+			SessionID: sessionID,
+			Text:      msg,
+			Role:      "user",
+		}); err != nil {
+			return err
 		}
 	}
-	_, err := k.session.Mutate(ctx, session.MutateInput{ID: sessionID, Ops: ops})
-	return err
+	return nil
 }

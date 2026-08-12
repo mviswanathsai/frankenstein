@@ -51,14 +51,18 @@ event model.
 
 Work in this order. Move each item forward as it lands.
 
-1. Implement `session.v0.3` changes across the Go codebase: update
-   `SessionStore` interface to replace `Resume`/`Read`/`Materialize`/`Mutate`
-   with `Get` and the dedicated write actions. Update the kernel's loop to use
-   `WriteMessage`/`WriteToolCall`/`WriteToolResult` instead of constructing
-   `MutationOp` envelopes. Update the context builder's record handling to
-   match the cleaned-up `SessionRecord` shape (remove `Seq`, `Raw`,
-   `CharCount`, `Tokens` references if any). The store implementation in
-   `internal/session/` must infer `turn_id` from the record stream.
+1. Implement `session.v0.3` changes across the Go codebase — complete. The
+   `SessionStore` interface now exposes `Create`/`Get`/`Delete` plus the
+   dedicated write actions (`WriteMessage`, `WriteToolCall`, `WriteToolResult`,
+   `WriteSystemNote`, `WriteRecord`, `SetMetadata`, `SetUsage`); `Resume`,
+   `Read`, `Materialize`, and `Mutate` are gone. The kernel loop writes through
+   the new actions (user and assistant messages via `WriteMessage`, inner-loop
+   tool results via `WriteRecord`, the built prefix via `SetMetadata`) and
+   reloads the session with `Get` after `Create`. The store infers `turn_id`
+   from the record stream and persists `tool_calls` and `call_id` alongside
+   it. The context-builder record-shape cleanup (removing `Seq`, `Raw`,
+   `CharCount`, `Tokens` references) was deferred: those fields stay
+   implementation-private on `SessionRecord` for now.
 2. Finish the Hermes census follow-ups the drafted contracts already depend on:
    session lineage and replay in `hermes_state.py`, fallback and streaming
    interrupt behavior in `chat_completion_helpers.py`, plugin hooks, approval
