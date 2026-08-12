@@ -65,7 +65,7 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 	var builtPrefix contextbuilder.BuiltPrefix
 	var bundles []contextprovider.ContextBundle
 	var catalog toolinvocation.ToolCatalog
-	var outputBudget int
+	outputBudget := k.cfg.OutputBudget
 
 	if hasCached {
 		builtPrefix = cachedPrefix
@@ -81,23 +81,17 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 			return sessionID, err
 		}
 	} else {
-		allocation, err := k.estimateWithRetry(sess, model)
-		if err != nil {
-			return sessionID, err
-		}
-		outputBudget = allocation.OutputReservation
-
-		catalog, err = k.listToolsWithRetry(ctx, sessionID)
+		catalog, err := k.listToolsWithRetry(ctx, sessionID)
 		if err != nil {
 			return sessionID, err
 		}
 
-		bundles, err = k.getContextWithRetry(ctx, sessionID, isNew)
+		bundles, err := k.getContextWithRetry(ctx, sessionID, isNew)
 		if err != nil {
 			return sessionID, err
 		}
 
-		builtPrefix, err = k.assembleWithRetry(ctx, sessionID, model, bundles, catalog)
+		builtPrefix, err := k.assembleWithRetry(ctx, sessionID, model, bundles, catalog)
 		if err != nil {
 			return sessionID, err
 		}
@@ -216,36 +210,6 @@ func (k *Kernel) storeBuiltPrefix(ctx context.Context, sessionID string, sess *s
 }
 
 // --- Setup helpers with retry ---
-
-func (k *Kernel) estimateWithRetry(sess *session.Session, model string) (contextbuilder.Allocation, error) {
-	firstRecordText := ""
-	if len(sess.Records) > 0 && sess.Records[0].Text != nil {
-		firstRecordText = *sess.Records[0].Text
-	}
-	tokenEstimate := int64(len(firstRecordText)) / 4
-
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		alloc, err := k.builder.Estimate(contextbuilder.EstimateRequest{
-			ID:                  "est_" + k.turnID,
-			Model:               model,
-			ContextWindowTokens: 128000,
-			Stub: contextbuilder.TranscriptStub{
-				MessageCount:    len(sess.Records),
-				EstimatedTokens: int(tokenEstimate),
-			},
-		})
-		if err == nil {
-			return alloc, nil
-		}
-		lastErr = err
-		var cbErr contextbuilder.ContextBuilderFailure
-		if errors.As(err, &cbErr) && !cbErr.Retryable {
-			break
-		}
-	}
-	return contextbuilder.Allocation{}, fmt.Errorf("estimate failed: %w", lastErr)
-}
 
 func (k *Kernel) listToolsWithRetry(ctx context.Context, sessionID string) (toolinvocation.ToolCatalog, error) {
 	var lastFailure *toolinvocation.ToolCatalogFailure

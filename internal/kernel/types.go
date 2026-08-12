@@ -49,6 +49,9 @@ type Config struct {
 	MaxRetries         int
 	MaxOutputRetries   int
 	OutputBudgetRaise  float64
+	// OutputBudget is the initial per-call output token budget, applied as
+	// max_output_tokens on each model invocation. Zero means no explicit cap.
+	OutputBudget       int
 	SessionTokenLimit  int64
 	CancelDrainTimeout time.Duration
 }

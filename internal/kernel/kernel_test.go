@@ -164,16 +164,10 @@ func (f *fakeModel) Invoke(ctx context.Context, req modelinvocation.ModelInvocat
 }
 
 type fakeBuilder struct {
-	estimateAlloc contextbuilder.Allocation
-	estimateErr   error
 	assemblePrefix contextbuilder.BuiltPrefix
 	assembleErr    error
 	prepareCtx    contextbuilder.BuiltContext
 	prepareErr    error
-}
-
-func (f *fakeBuilder) Estimate(req contextbuilder.EstimateRequest) (contextbuilder.Allocation, error) {
-	return f.estimateAlloc, f.estimateErr
 }
 
 func (f *fakeBuilder) Assemble(req contextbuilder.AssembleRequest) (contextbuilder.BuiltPrefix, error) {
@@ -273,6 +267,9 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.OutputBudgetRaise != 0.2 {
 		t.Errorf("OutputBudgetRaise = %f, want 0.2", cfg.OutputBudgetRaise)
+	}
+	if cfg.OutputBudget != 0 {
+		t.Errorf("OutputBudget = %d, want 0 (no explicit cap by default)", cfg.OutputBudget)
 	}
 	if cfg.CancelDrainTimeout != 1e9 { // 1 second in nanoseconds
 		t.Errorf("CancelDrainTimeout = %v, want 1s", cfg.CancelDrainTimeout)
@@ -382,7 +379,6 @@ func TestNewSession(t *testing.T) {
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
 	fc.initBundle = &contextprovider.ContextBundle{}
 	fm.result = completeTurnResult("hello from model")
-	fb.estimateAlloc = contextbuilder.Allocation{OutputReservation: 100}
 	fb.assemblePrefix = contextbuilder.BuiltPrefix{
 		SystemPrompt:   "you are helpful",
 		SystemPromptID: "abc123",
@@ -529,7 +525,6 @@ func TestToolStopRequestedExits(t *testing.T) {
 	fs.created = newTestSession("sess1")
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
 	fc.initBundle = &contextprovider.ContextBundle{}
-	fb.estimateAlloc = contextbuilder.Allocation{OutputReservation: 100}
 	fb.assemblePrefix = contextbuilder.BuiltPrefix{SystemPrompt: "prompt", SystemPromptID: "p1"}
 	fb.prepareCtx = contextbuilder.BuiltContext{
 		Input: modelinvocation.ModelInput{System: "prompt", Messages: []modelinvocation.ModelMessage{}},
@@ -571,7 +566,6 @@ func TestModelErrorExit(t *testing.T) {
 	fs.created = newTestSession("sess1")
 	// No catalog or context needed since model fails immediately.
 	fc.initBundle = &contextprovider.ContextBundle{}
-	fb.estimateAlloc = contextbuilder.Allocation{OutputReservation: 100}
 	fb.assemblePrefix = contextbuilder.BuiltPrefix{SystemPrompt: "prompt", SystemPromptID: "p1"}
 	fb.prepareCtx = contextbuilder.BuiltContext{
 		Input: modelinvocation.ModelInput{System: "prompt", Messages: []modelinvocation.ModelMessage{}},
@@ -601,7 +595,6 @@ func TestTurnBudgetExhausted(t *testing.T) {
 	fs.created = newTestSession("sess1")
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
 	fc.initBundle = &contextprovider.ContextBundle{}
-	fb.estimateAlloc = contextbuilder.Allocation{OutputReservation: 100}
 	fb.assemblePrefix = contextbuilder.BuiltPrefix{SystemPrompt: "prompt", SystemPromptID: "p1"}
 	fb.prepareCtx = contextbuilder.BuiltContext{
 		Input: modelinvocation.ModelInput{System: "prompt", Messages: []modelinvocation.ModelMessage{}},

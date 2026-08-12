@@ -52,10 +52,9 @@ type SessionStore interface {
 }
 
 // ContextBuilder is the kernel's outbound surface to the Context Builder
-// capability. The kernel calls estimate, assemble, and prepare in sequence;
-// the builder owns the assembly.
+// capability. The kernel calls assemble and prepare; estimate is a
+// builder-owned surface the v0 kernel does not call.
 type ContextBuilder interface {
-	Estimate(req contextbuilder.EstimateRequest) (contextbuilder.Allocation, error)
 	Assemble(req contextbuilder.AssembleRequest) (contextbuilder.BuiltPrefix, error)
 	Prepare(req contextbuilder.PrepareRequest) (contextbuilder.BuiltContext, error)
 }
