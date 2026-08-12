@@ -39,7 +39,7 @@ means.
 - model invocation — `model_invocation.v0` —
   `docs/model-invocation-capability-contract.md` (dossier at
   `docs/model-invocation-service-dossier.md`)
-- context builder — `context_builder.v0` —
+- context builder — `context_builder.v0.1` —
   `docs/context-builder-capability-contract.md` (implemented in
   `internal/contextbuilder/`; dossier at
   `docs/context-builder-service-dossier.md`)
