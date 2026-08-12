@@ -406,12 +406,52 @@ func (s *Store) SetMetadata(ctx context.Context, input SetMetadataInput) (*SetRe
 	})
 }
 
-// SetUsage replaces the entire session usage object. It is a full
-// replacement, not a merge.
+// SetUsage merges the provided usage fields into the current session usage
+// object. Fields present in the input overwrite current values; absent fields
+// are left untouched. This lets callers supply provider-verified token counts
+// without carrying every auto-computed field.
 func (s *Store) SetUsage(ctx context.Context, input SetUsageInput) (*SetResult, error) {
 	return s.updateState(ctx, input.SessionID, func(current *Session) {
-		current.Usage = input.Usage
+		mergeUsage(&current.Usage, &input.Usage)
 	})
+}
+
+// mergeUsage copies non-zero fields from src into dst. Zero-valued fields
+// in src are treated as absent and do not overwrite dst.
+func mergeUsage(dst, src *SessionUsage) {
+	if src.CharCount != 0 {
+		dst.CharCount = src.CharCount
+	}
+	if src.LastPromptTokens.Value != 0 || src.LastPromptTokens.Source != "" {
+		dst.LastPromptTokens = src.LastPromptTokens
+	}
+	if src.LastOutputTokens != 0 {
+		dst.LastOutputTokens = src.LastOutputTokens
+	}
+	if src.TotalInputTokens != 0 {
+		dst.TotalInputTokens = src.TotalInputTokens
+	}
+	if src.TotalOutputTokens != 0 {
+		dst.TotalOutputTokens = src.TotalOutputTokens
+	}
+	if src.TotalReasoningTokens != 0 {
+		dst.TotalReasoningTokens = src.TotalReasoningTokens
+	}
+	if src.CacheReadTokens != 0 {
+		dst.CacheReadTokens = src.CacheReadTokens
+	}
+	if src.CacheWriteTokens != 0 {
+		dst.CacheWriteTokens = src.CacheWriteTokens
+	}
+	if src.ContextWindowTokens != 0 {
+		dst.ContextWindowTokens = src.ContextWindowTokens
+	}
+	if src.LastContextUsedPct != 0 {
+		dst.LastContextUsedPct = src.LastContextUsedPct
+	}
+	if src.APICallCount != 0 {
+		dst.APICallCount = src.APICallCount
+	}
 }
 
 func (s *Store) Delete(ctx context.Context, input DeleteInput) (*DeleteResult, error) {
