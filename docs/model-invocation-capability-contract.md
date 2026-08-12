@@ -110,9 +110,10 @@ key.
 `session_id` identifies the current session when known. It provides
 correlation only. Merely receiving it does not grant session-record access.
 
-`turn_id` identifies the current turn when known. It is issued by the
-Runtime Kernel. The Runtime Kernel contract is not yet drafted, so this
-reference is a correlation convention rather than a typed promise.
+`turn_id` identifies the current turn when known. It is assigned by the
+session service, not by the caller. A request may carry it for correlation
+when the session service has made it available; a missing `turn_id` is valid
+when no turn is in progress or the turn identity is not yet known.
 
 `model` is required. It is the model identity to invoke.
 
@@ -199,7 +200,7 @@ CallUsage {
 
 `input_tokens` and `output_tokens` are required. The cache and reasoning
 counts are present when the provider reports them. Each count reuses
-`TokenCount` from `session.v0.2`: a value plus a `source` of
+`TokenCount` from `session.v0.3`: a value plus a `source` of
 `char_estimate`, `tokenizer`, or `provider`. Usage is provider-verified
 when the provider reports it; otherwise it is estimated, and the source
 says so.
@@ -481,7 +482,7 @@ provider is never re-invoked.
 This contract reuses:
 
 - `ToolCall` and `ToolCatalog` from `tool_invocation.v0`
-- `TokenCount` from `session.v0.2`
+- `TokenCount` from `session.v0.3`
 
 It does not redefine them. Model Invocation consumes `ToolCatalog` and
 produces `ToolCall` values; Tool Invocation remains the sole semantic owner

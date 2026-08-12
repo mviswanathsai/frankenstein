@@ -146,7 +146,7 @@ from those outcomes to Session.
 
 This contract reuses:
 
-- `ContextRef` from `session.v0.2`
+- `ContextRef` from `session.v0.3`
 - `TouchedPath` from `context_provider.v0.1`
 
 It does not redefine either shape.
@@ -308,9 +308,11 @@ immutable base snapshot.
 `session_id` and `turn_id` have the same meaning as in
 `tool_invocation.list_tools`.
 
-A request containing a call that can produce a catalog transition must include
-both `session_id` and `turn_id`. The service rejects the request as
-`invalid_request` before any call starts when either value is absent.
+`turn_id` is optional for correlation with session records. When present,
+it links the execution to a specific turn. When absent (e.g. the session
+service has not yet made the turn identity available), execution proceeds
+without turn-level lineage. Catalog transitions recorded without a
+`turn_id` retain `session_id` and `catalog_id` for provenance.
 
 `mode` is optional. Omission means `sequential`.
 

@@ -187,7 +187,7 @@ relative components and symlinks cannot escape the granted root.
 record, or another upstream component. The context provider should not be the
 primary parser for raw user text references.
 
-`ContextRef` is the shared type established by `session.v0.2`; this contract
+`ContextRef` is the shared type established by `session.v0.3`; this contract
 does not redefine it. A context provider dereferences input refs and returns
 content-bearing candidates derived from them.
 
@@ -228,7 +228,7 @@ requested now. It may represent a user or assistant message, system material,
 tool-related text, or a system note.
 
 In `context_provider.v0.1`, `triggering_record` uses the `SessionRecord` shape
-established by `session.v0.2` because the required fields currently map one to
+established by `session.v0.3` because the required fields currently map one to
 one. This is a provisional interoperability choice, not a required control
 flow. It does not require the runtime to persist the record, invoke the session
 service first, or obtain the value from a session service at all. A runtime,
@@ -516,7 +516,7 @@ Reasons:
 - the session capability owns canonical conversation-record reads
 
 When broader history or active continuation state is needed, the provider must
-request `session.read` or `session.materialize` through the mediator if it has
+request `session.get` through the mediator if it has
 that advertised access. Merely receiving a `session_id` does not grant session
 record access.
 
@@ -629,7 +629,7 @@ with:
 - require non-empty `content` on every candidate and treat candidate `refs` only
   as source links
 - avoid conversation-record access beyond `triggering_record` unless the
-  provider is authorized to invoke `session.read` or `session.materialize`
+  provider is authorized to invoke `session.get`
 - accept an optional `session_id`
 - accept unknown `reason` values and treat them as retrieval evidence, not
   lifecycle commands

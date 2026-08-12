@@ -142,7 +142,7 @@ part of the builder's contract.
 
 ## Reconciliation With Existing Contracts
 
-### Session (`session.v0.2`)
+### Session (`session.v0.3`)
 
 Context Builder **consumes** `SessionRecord[]` as the `transcript` input to
 `prepare`. It normalizes these internal records into `ModelMessage[]`. It does
@@ -191,7 +191,7 @@ separately on the invoke request.
 
 ### Session usage (`TokenCount`)
 
-`TokenCount` from `session.v0.2` is reused for allocation token values. All
+`TokenCount` from `session.v0.3` is reused for allocation token values. All
 budget fields in `Allocation` are token counts in the model's tokenizer units
 unless the builder's estimation policy uses a different approximation.
 
@@ -277,8 +277,8 @@ the terminal event appended by the mediator.
   `model_invocation.v0`
 - `ToolCatalog` is reused from `tool_invocation.v0`
 - `ContextSlot` is reused from `context_provider.v0.1`
-- `SessionRecord` is reused from `session.v0.2`
-- `TokenCount` is reused from `session.v0.2`
+- `SessionRecord` is reused from `session.v0.3`
+- `TokenCount` is reused from `session.v0.3`
 
 ## External Effects
 

@@ -270,10 +270,10 @@ Reasons:
 - the session capability already owns canonical transcript reads
 
 When a provider needs broader history, the runtime may pass an optional
-`transcript_view`, or the provider may request `session.read` through the
+`transcript_view`, or the provider may request `session.get` through the
 mediator if its advertised surface allows that. In either case, the request
-should make the scope explicit: active continuation, recent window, whole
-session, redacted view, or provider-specific projection.
+should make the scope explicit: full session, active continuation, recent
+window, redacted view, or provider-specific projection.
 
 Hermes supports this distinction in practice. Automatic memory recall is driven
 by the current query:
