@@ -33,17 +33,6 @@ func emptyResponsePolicy(result *modelinvocation.ModelInvocationResult) bool {
 	return result.Content == "" && len(result.ToolCalls) == 0
 }
 
-// maxOutputPolicy decides whether to retry on max_output truncation and
-// returns the new output budget. Returns (newBudget, shouldRetry).
-// Raises by cfg.OutputBudgetRaise fraction each attempt.
-func maxOutputPolicy(cfg Config, currentBudget int, attempt int) (int, bool) {
-	if attempt >= cfg.MaxOutputRetries {
-		return currentBudget, false
-	}
-	newBudget := currentBudget + int(float64(currentBudget)*cfg.OutputBudgetRaise)
-	return newBudget, true
-}
-
 // toolResultRequestsStop checks if any ToolResult carries stop_requested.
 func toolResultRequestsStop(results []toolinvocation.ToolResult) bool {
 	for _, r := range results {

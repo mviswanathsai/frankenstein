@@ -65,7 +65,6 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 	var builtPrefix contextbuilder.BuiltPrefix
 	var bundles []contextprovider.ContextBundle
 	var catalog toolinvocation.ToolCatalog
-	outputBudget := k.cfg.OutputBudget
 
 	if hasCached {
 		builtPrefix = cachedPrefix
@@ -110,7 +109,7 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 	// --- Inner loop ---
 	result := runInnerLoop(ctx, k.cfg, k.tools, k.model, k.builder, k.observer,
 		sessionID, k.turnID, model, builtPrefix,
-		transcript.Records, &catalog, outputBudget, bundles,
+		transcript.Records, &catalog, bundles,
 	)
 
 	// --- Append accumulated records ---

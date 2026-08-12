@@ -47,11 +47,6 @@ type Config struct {
 	DefaultThinking    string
 	TurnBudget         int
 	MaxRetries         int
-	MaxOutputRetries   int
-	OutputBudgetRaise  float64
-	// OutputBudget is the initial per-call output token budget, applied as
-	// max_output_tokens on each model invocation. Zero means no explicit cap.
-	OutputBudget       int
 	SessionTokenLimit  int64
 	CancelDrainTimeout time.Duration
 }
@@ -61,8 +56,6 @@ func DefaultConfig() Config {
 	return Config{
 		TurnBudget:         90,
 		MaxRetries:         3,
-		MaxOutputRetries:   2,
-		OutputBudgetRaise:  0.2,
 		CancelDrainTimeout: 1 * time.Second,
 	}
 }

@@ -262,15 +262,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.MaxRetries != 3 {
 		t.Errorf("MaxRetries = %d, want 3", cfg.MaxRetries)
 	}
-	if cfg.MaxOutputRetries != 2 {
-		t.Errorf("MaxOutputRetries = %d, want 2", cfg.MaxOutputRetries)
-	}
-	if cfg.OutputBudgetRaise != 0.2 {
-		t.Errorf("OutputBudgetRaise = %f, want 0.2", cfg.OutputBudgetRaise)
-	}
-	if cfg.OutputBudget != 0 {
-		t.Errorf("OutputBudget = %d, want 0 (no explicit cap by default)", cfg.OutputBudget)
-	}
 	if cfg.CancelDrainTimeout != 1e9 { // 1 second in nanoseconds
 		t.Errorf("CancelDrainTimeout = %v, want 1s", cfg.CancelDrainTimeout)
 	}
@@ -316,21 +307,6 @@ func TestEmptyResponsePolicy(t *testing.T) {
 		ToolCalls: []toolinvocation.ToolCall{{ID: "tc1"}},
 	}) {
 		t.Error("tool calls should not be accepted as empty")
-	}
-}
-
-func TestMaxOutputPolicy(t *testing.T) {
-	cfg := Config{MaxOutputRetries: 2, OutputBudgetRaise: 0.2}
-	newBudget, shouldRetry := maxOutputPolicy(cfg, 100, 0)
-	if !shouldRetry {
-		t.Error("should retry on attempt 0")
-	}
-	if newBudget != 120 {
-		t.Errorf("budget = %d, want 120", newBudget)
-	}
-	_, shouldRetry2 := maxOutputPolicy(cfg, 100, 2)
-	if shouldRetry2 {
-		t.Error("should not retry on attempt 2 (exhausted)")
 	}
 }
 

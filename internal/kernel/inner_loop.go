@@ -38,11 +38,8 @@ func runInnerLoop(
 	prefix contextbuilder.BuiltPrefix,
 	transcript []session.SessionRecord,
 	activeCatalog *toolinvocation.ToolCatalog,
-	outputBudget int,
 	bundles []contextprovider.ContextBundle,
 ) innerLoopResult {
-	currentBudget := outputBudget
-	maxOutputRetries := 0
 	var newRecords []session.SessionRecord
 
 	for iter := 1; iter <= cfg.TurnBudget; iter++ {
@@ -71,9 +68,6 @@ func runInnerLoop(
 			Input:     builtCtx.Input,
 			Catalog:   activeCatalog,
 		}
-		if currentBudget > 0 {
-			req.MaxOutputTokens = &currentBudget
-		}
 
 		result, failure := invokeWithRetry(ctx, cfg, model, req)
 		if failure != nil {
@@ -100,15 +94,7 @@ func runInnerLoop(
 			}
 		case modelinvocation.StopToolCalls:
 			// Continue to the empty-response check and tool execution.
-		case modelinvocation.StopMaxOutput:
-			newBudget, shouldRetry := maxOutputPolicy(cfg, currentBudget, maxOutputRetries)
-			if shouldRetry {
-				maxOutputRetries++
-				currentBudget = newBudget
-				continue
-			}
-			return innerLoopResult{exitReason: ExitModelError, newRecords: newRecords}
-		case modelinvocation.StopContentFilter:
+		case modelinvocation.StopMaxOutput, modelinvocation.StopContentFilter:
 			return innerLoopResult{exitReason: ExitModelError, newRecords: newRecords}
 		}
 
