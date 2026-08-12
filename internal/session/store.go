@@ -76,14 +76,6 @@ CREATE TABLE IF NOT EXISTS session_records (
 	PRIMARY KEY (session_id, seq),
 	UNIQUE (session_id, id)
 );
-
-CREATE TABLE IF NOT EXISTS session_mutation_results (
-	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-	idempotency_key TEXT NOT NULL,
-	version INTEGER NOT NULL,
-	created_at TEXT NOT NULL,
-	PRIMARY KEY (session_id, idempotency_key)
-);
 	`)
 	if err != nil {
 		return err
@@ -530,35 +522,6 @@ WHERE id = ?`,
 		string(metadataJSON),
 		string(usageJSON),
 		session.ID,
-	)
-	return err
-}
-
-func mutationAlreadyApplied(ctx context.Context, tx *sql.Tx, sessionID, idempotencyKey string) (bool, error) {
-	row := tx.QueryRowContext(ctx, `
-	SELECT 1
-	FROM session_mutation_results
-	WHERE session_id = ? AND idempotency_key = ?`, sessionID, idempotencyKey)
-
-	var matched int
-	if err := row.Scan(&matched); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-func insertMutationResult(ctx context.Context, tx *sql.Tx, sessionID, idempotencyKey string, version int64, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `
-	INSERT INTO session_mutation_results (
-		session_id, idempotency_key, version, created_at
-	) VALUES (?, ?, ?, ?)`,
-		sessionID,
-		idempotencyKey,
-		version,
-		now.Format(time.RFC3339Nano),
 	)
 	return err
 }
