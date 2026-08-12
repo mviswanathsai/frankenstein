@@ -88,7 +88,7 @@ type SessionUsage struct {
 
 type SessionRecord struct {
 	ID  string `json:"id"`
-	Seq int64  `json:"-"`
+	Seq int64  `json:"seq"`
 
 	TurnID    string       `json:"turn_id,omitempty"`
 	Refs      []ContextRef `json:"refs,omitempty"`
@@ -98,12 +98,12 @@ type SessionRecord struct {
 	Kind RecordKind      `json:"kind"`
 	Role string          `json:"role,omitempty"`
 	Text *string         `json:"text,omitempty"`
-	Raw  json.RawMessage `json:"-"`
+	Raw  json.RawMessage `json:"raw,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 
-	CharCount int64      `json:"-"`
-	Tokens    TokenCount `json:"-"`
+	CharCount int64      `json:"char_count"`
+	Tokens    TokenCount `json:"tokens"`
 }
 
 // ToolCall mirrors toolinvocation.ToolCall field-for-field. The session
