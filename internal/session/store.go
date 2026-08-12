@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS session_records (
 	role TEXT,
 	text TEXT,
 	refs_json TEXT,
+	call_id TEXT,
+	tool_calls_json TEXT,
 	raw_json TEXT,
 	created_at TEXT NOT NULL,
 	char_count INTEGER NOT NULL,
@@ -100,6 +102,8 @@ func (s *Store) ensureSessionRecordColumns(ctx context.Context) error {
 	}{
 		{name: "turn_id", sql: `ALTER TABLE session_records ADD COLUMN turn_id TEXT`},
 		{name: "refs_json", sql: `ALTER TABLE session_records ADD COLUMN refs_json TEXT`},
+		{name: "call_id", sql: `ALTER TABLE session_records ADD COLUMN call_id TEXT`},
+		{name: "tool_calls_json", sql: `ALTER TABLE session_records ADD COLUMN tool_calls_json TEXT`},
 	}
 	for _, migration := range migrations {
 		if columns[migration.name] {
@@ -135,14 +139,14 @@ func (s *Store) sessionRecordColumns(ctx context.Context) (map[string]bool, erro
 	return columns, rows.Err()
 }
 
-func (s *Store) Create(ctx context.Context, input CreateInput) (*Session, error) {
+func (s *Store) Create(ctx context.Context, input CreateInput) (*CreateResult, error) {
 	if strings.TrimSpace(input.Prompt) == "" {
 		return nil, fmt.Errorf("%w: prompt is required", ErrInvalidInput)
 	}
 
 	now := s.now()
 	record := normalizeRecord(SessionRecord{
-		TurnID: input.TurnID,
+		TurnID: newID("turn"),
 		Refs:   input.Refs,
 		Kind:   RecordMessage,
 		Role:   "user",
@@ -175,31 +179,17 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (*Session, error)
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return session, nil
-}
-
-func (s *Store) Resume(ctx context.Context, input ResumeInput) (*Session, error) {
-	return s.loadActive(ctx, input.ID)
-}
-
-func (s *Store) Read(ctx context.Context, input ReadInput) (*Session, error) {
-	return s.loadActive(ctx, input.ID)
-}
-
-func (s *Store) Materialize(ctx context.Context, input MaterializeInput) (*MaterializedSession, error) {
-	session, err := s.loadActive(ctx, input.ID)
-	if err != nil {
-		return nil, err
-	}
-	return &MaterializedSession{
-		SessionID: session.ID,
-		Version:   session.Version,
-		State:     session.State,
-		Kind:      ContinuationOrderedRecords,
-		Metadata:  session.Metadata,
-		Usage:     session.Usage,
-		Records:   session.Records,
+	return &CreateResult{
+		ID:      session.ID,
+		Version: session.Version,
+		State:   session.State,
 	}, nil
+}
+
+// Get returns the current session by ID. Read-only: it must not mutate
+// session state. Deleted sessions are rejected.
+func (s *Store) Get(ctx context.Context, input GetInput) (*Session, error) {
+	return s.loadActive(ctx, input.ID)
 }
 
 func (s *Store) loadActive(ctx context.Context, rawID string) (*Session, error) {
@@ -217,14 +207,13 @@ func (s *Store) loadActive(ctx context.Context, rawID string) (*Session, error) 
 	return session, nil
 }
 
-func (s *Store) Mutate(ctx context.Context, input MutateInput) (*Session, error) {
-	id := strings.TrimSpace(input.ID)
+// writeRecord is the shared write path for the record-writing actions:
+// load the session, reject deleted sessions, assign turn_id, normalize and
+// insert the record, bump the version, and commit.
+func (s *Store) writeRecord(ctx context.Context, sessionID string, record SessionRecord) (*WriteResult, error) {
+	id := strings.TrimSpace(sessionID)
 	if id == "" {
-		return nil, fmt.Errorf("%w: id is required", ErrInvalidInput)
-	}
-	idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
-	if len(input.Ops) == 0 {
-		return nil, fmt.Errorf("%w: ops are required", ErrInvalidMutation)
+		return nil, fmt.Errorf("%w: session_id is required", ErrInvalidInput)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -240,66 +229,192 @@ func (s *Store) Mutate(ctx context.Context, input MutateInput) (*Session, error)
 	if current.State == SessionDeleted {
 		return nil, ErrDeleted
 	}
-	if idempotencyKey != "" {
-		alreadyApplied, err := mutationAlreadyApplied(ctx, tx, current.ID, idempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-		if alreadyApplied {
-			if err := tx.Commit(); err != nil {
-				return nil, err
-			}
-			return current, nil
-		}
-	}
 
 	now := s.now()
-	nextSeq := int64(len(current.Records) + 1)
-	for _, op := range input.Ops {
-		switch op.Type {
-		case MutationAppendRecord:
-			if op.Record == nil {
-				return nil, fmt.Errorf("%w: append_record requires record", ErrInvalidMutation)
-			}
-			record := normalizeRecord(*op.Record, nextSeq, now)
-			current.Records = append(current.Records, record)
-			if err := insertRecord(ctx, tx, current.ID, record); err != nil {
-				return nil, err
-			}
-			nextSeq++
-			current.Usage = updateUsageForAppendedRecord(current.Usage, record)
-		case MutationSetMetadata:
-			if op.Metadata == nil {
-				return nil, fmt.Errorf("%w: set_metadata requires metadata", ErrInvalidMutation)
-			}
-			current.Metadata = *op.Metadata
-		case MutationSetUsage:
-			if op.Usage == nil {
-				return nil, fmt.Errorf("%w: set_usage requires usage", ErrInvalidMutation)
-			}
-			current.Usage = *op.Usage
-		default:
-			return nil, fmt.Errorf("%w: unknown mutation type %q", ErrInvalidMutation, op.Type)
-		}
+	if record.TurnID == "" {
+		record.TurnID = inferTurnID(current.Records, record.Kind == RecordMessage && record.Role == "user")
+	}
+	record = normalizeRecord(record, int64(len(current.Records)+1), now)
+	if err := insertRecord(ctx, tx, current.ID, record); err != nil {
+		return nil, err
 	}
 
+	current.Records = append(current.Records, record)
+	current.Usage = updateUsageForAppendedRecord(current.Usage, record)
 	current.Version++
 	current.UpdatedAt = now
 	if err := updateSession(ctx, tx, current); err != nil {
 		return nil, err
 	}
-	if idempotencyKey != "" {
-		if err := insertMutationResult(ctx, tx, current.ID, idempotencyKey, current.Version, now); err != nil {
-			return nil, err
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &WriteResult{
+		ID:       current.ID,
+		RecordID: record.ID,
+		Version:  current.Version,
+		State:    current.State,
+	}, nil
+}
+
+// inferTurnID assigns turn grouping consistent with the contract: a user
+// message opens a new turn; every other record extends the most recent user
+// turn. Falls back to a fresh turn when the session has no user message yet.
+func inferTurnID(records []SessionRecord, isUserMessage bool) string {
+	lastUserTurn := ""
+	for _, record := range records {
+		if record.Kind == RecordMessage && record.Role == "user" && record.TurnID != "" {
+			lastUserTurn = record.TurnID
 		}
+	}
+	if isUserMessage || lastUserTurn == "" {
+		return newID("turn")
+	}
+	return lastUserTurn
+}
+
+func (s *Store) WriteMessage(ctx context.Context, input WriteMessageInput) (*WriteResult, error) {
+	if strings.TrimSpace(input.Text) == "" {
+		return nil, fmt.Errorf("%w: text is required", ErrInvalidInput)
+	}
+	if !validMessageRole(input.Role) {
+		return nil, fmt.Errorf("%w: invalid message role %q", ErrInvalidInput, input.Role)
+	}
+	return s.writeRecord(ctx, input.SessionID, SessionRecord{
+		Kind: RecordMessage,
+		Role: input.Role,
+		Text: stringPointer(input.Text),
+		Refs: input.Refs,
+	})
+}
+
+func validMessageRole(role string) bool {
+	switch role {
+	case "user", "assistant", "system":
+		return true
+	}
+	return false
+}
+
+func (s *Store) WriteToolCall(ctx context.Context, input WriteToolCallInput) (*WriteResult, error) {
+	if strings.TrimSpace(input.Name) == "" {
+		return nil, fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	if strings.TrimSpace(input.CallID) == "" {
+		return nil, fmt.Errorf("%w: call_id is required", ErrInvalidInput)
+	}
+	if input.Arguments == nil {
+		return nil, fmt.Errorf("%w: arguments are required", ErrInvalidInput)
+	}
+	return s.writeRecord(ctx, input.SessionID, SessionRecord{
+		Kind: RecordToolCall,
+		ToolCalls: []ToolCall{{
+			ID:        input.CallID,
+			ToolID:    input.ToolID,
+			Name:      input.Name,
+			Arguments: input.Arguments,
+		}},
+		Refs: input.Refs,
+	})
+}
+
+func (s *Store) WriteToolResult(ctx context.Context, input WriteToolResultInput) (*WriteResult, error) {
+	if strings.TrimSpace(input.Text) == "" {
+		return nil, fmt.Errorf("%w: text is required", ErrInvalidInput)
+	}
+	if strings.TrimSpace(input.CallID) == "" {
+		return nil, fmt.Errorf("%w: call_id is required", ErrInvalidInput)
+	}
+	return s.writeRecord(ctx, input.SessionID, SessionRecord{
+		Kind:   RecordToolResult,
+		Text:   stringPointer(input.Text),
+		CallID: input.CallID,
+		Refs:   input.Refs,
+	})
+}
+
+func (s *Store) WriteSystemNote(ctx context.Context, input WriteSystemNoteInput) (*WriteResult, error) {
+	if strings.TrimSpace(input.Text) == "" {
+		return nil, fmt.Errorf("%w: text is required", ErrInvalidInput)
+	}
+	return s.writeRecord(ctx, input.SessionID, SessionRecord{
+		Kind: RecordSystemNote,
+		Text: stringPointer(input.Text),
+		Refs: input.Refs,
+	})
+}
+
+func (s *Store) WriteRecord(ctx context.Context, input WriteRecordInput) (*WriteResult, error) {
+	if err := validateRecordKind(input.Record.Kind); err != nil {
+		return nil, err
+	}
+	return s.writeRecord(ctx, input.SessionID, input.Record)
+}
+
+func validateRecordKind(kind RecordKind) error {
+	switch kind {
+	case "", RecordMessage, RecordToolCall, RecordToolResult, RecordSystemNote:
+		return nil
+	}
+	return fmt.Errorf("%w: unknown record kind %q", ErrInvalidInput, kind)
+}
+
+// updateState is the shared write path for the state-replacement actions:
+// apply mutate to the current session, bump the version, and commit.
+func (s *Store) updateState(ctx context.Context, sessionID string, mutate func(*Session)) (*SetResult, error) {
+	id := strings.TrimSpace(sessionID)
+	if id == "" {
+		return nil, fmt.Errorf("%w: session_id is required", ErrInvalidInput)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer rollback(tx)
+
+	current, err := loadSessionTx(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if current.State == SessionDeleted {
+		return nil, ErrDeleted
+	}
+
+	now := s.now()
+	mutate(current)
+	current.Version++
+	current.UpdatedAt = now
+	if err := updateSession(ctx, tx, current); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return current, nil
+	return &SetResult{
+		ID:      current.ID,
+		Version: current.Version,
+		State:   current.State,
+	}, nil
 }
 
-func (s *Store) Delete(ctx context.Context, input DeleteInput) (*Session, error) {
+// SetMetadata replaces the entire session metadata object. It is a full
+// replacement, not a merge.
+func (s *Store) SetMetadata(ctx context.Context, input SetMetadataInput) (*SetResult, error) {
+	return s.updateState(ctx, input.SessionID, func(current *Session) {
+		current.Metadata = input.Metadata
+	})
+}
+
+// SetUsage replaces the entire session usage object. It is a full
+// replacement, not a merge.
+func (s *Store) SetUsage(ctx context.Context, input SetUsageInput) (*SetResult, error) {
+	return s.updateState(ctx, input.SessionID, func(current *Session) {
+		current.Usage = input.Usage
+	})
+}
+
+func (s *Store) Delete(ctx context.Context, input DeleteInput) (*DeleteResult, error) {
 	id := strings.TrimSpace(input.ID)
 	if id == "" {
 		return nil, fmt.Errorf("%w: id is required", ErrInvalidInput)
@@ -316,7 +431,14 @@ func (s *Store) Delete(ctx context.Context, input DeleteInput) (*Session, error)
 		return nil, err
 	}
 	if current.State == SessionDeleted {
-		return current, nil
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return &DeleteResult{
+			ID:      current.ID,
+			Version: current.Version,
+			State:   current.State,
+		}, nil
 	}
 
 	now := s.now()
@@ -331,7 +453,11 @@ func (s *Store) Delete(ctx context.Context, input DeleteInput) (*Session, error)
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return current, nil
+	return &DeleteResult{
+		ID:      current.ID,
+		Version: current.Version,
+		State:   current.State,
+	}, nil
 }
 
 func (s *Store) load(ctx context.Context, id string) (*Session, error) {
@@ -450,14 +576,26 @@ func insertRecord(ctx context.Context, tx *sql.Tx, sessionID string, record Sess
 		}
 		refs = string(refsJSON)
 	}
+	var callID any
+	if record.CallID != "" {
+		callID = record.CallID
+	}
+	var toolCalls any
+	if len(record.ToolCalls) > 0 {
+		toolCallsJSON, err := json.Marshal(record.ToolCalls)
+		if err != nil {
+			return err
+		}
+		toolCalls = string(toolCallsJSON)
+	}
 	var text any
 	if record.Text != nil {
 		text = *record.Text
 	}
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO session_records (
-	session_id, seq, id, turn_id, kind, role, text, refs_json, raw_json, created_at, char_count, token_count, token_count_source
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	session_id, seq, id, turn_id, kind, role, text, refs_json, call_id, tool_calls_json, raw_json, created_at, char_count, token_count, token_count_source
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID,
 		record.Seq,
 		record.ID,
@@ -466,6 +604,8 @@ INSERT INTO session_records (
 		record.Role,
 		text,
 		refs,
+		callID,
+		toolCalls,
 		raw,
 		record.CreatedAt.Format(time.RFC3339Nano),
 		record.CharCount,
@@ -536,7 +676,7 @@ WHERE id = ?`, id)
 
 func loadRecordsTx(ctx context.Context, tx *sql.Tx, sessionID string) ([]SessionRecord, error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT id, seq, turn_id, kind, role, text, refs_json, raw_json, created_at, char_count, token_count, token_count_source
+SELECT id, seq, turn_id, kind, role, text, refs_json, call_id, tool_calls_json, raw_json, created_at, char_count, token_count, token_count_source
 FROM session_records
 WHERE session_id = ?
 ORDER BY seq ASC`, sessionID)
@@ -551,6 +691,8 @@ ORDER BY seq ASC`, sessionID)
 		var turnID sql.NullString
 		var text sql.NullString
 		var refs sql.NullString
+		var callID sql.NullString
+		var toolCalls sql.NullString
 		var raw sql.NullString
 		var createdAt string
 		var tokenSource string
@@ -562,6 +704,8 @@ ORDER BY seq ASC`, sessionID)
 			&record.Role,
 			&text,
 			&refs,
+			&callID,
+			&toolCalls,
 			&raw,
 			&createdAt,
 			&record.CharCount,
@@ -578,6 +722,14 @@ ORDER BY seq ASC`, sessionID)
 		}
 		if refs.Valid && strings.TrimSpace(refs.String) != "" {
 			if err := json.Unmarshal([]byte(refs.String), &record.Refs); err != nil {
+				return nil, err
+			}
+		}
+		if callID.Valid {
+			record.CallID = callID.String
+		}
+		if toolCalls.Valid && strings.TrimSpace(toolCalls.String) != "" {
+			if err := json.Unmarshal([]byte(toolCalls.String), &record.ToolCalls); err != nil {
 				return nil, err
 			}
 		}

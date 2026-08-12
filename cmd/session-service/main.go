@@ -63,43 +63,11 @@ func run() error {
 			return err
 		}
 		return encode(os.Stdout, result)
-	case "resume":
+	case "get":
 		if len(args) != 2 {
-			return usageError("resume requires session id")
+			return usageError("get requires session id")
 		}
-		result, err := store.Resume(ctx, session.ResumeInput{ID: args[1]})
-		if err != nil {
-			return err
-		}
-		return encode(os.Stdout, result)
-	case "read":
-		if len(args) != 2 {
-			return usageError("read requires session id")
-		}
-		result, err := store.Read(ctx, session.ReadInput{ID: args[1]})
-		if err != nil {
-			return err
-		}
-		return encode(os.Stdout, result)
-	case "materialize":
-		if len(args) != 2 {
-			return usageError("materialize requires session id")
-		}
-		result, err := store.Materialize(ctx, session.MaterializeInput{ID: args[1]})
-		if err != nil {
-			return err
-		}
-		return encode(os.Stdout, result)
-	case "mutate":
-		if len(args) != 2 {
-			return usageError("mutate requires session id")
-		}
-		var input session.MutateInput
-		if err := decodeRequired(&input); err != nil {
-			return err
-		}
-		input.ID = args[1]
-		result, err := store.Mutate(ctx, input)
+		result, err := store.Get(ctx, session.GetInput{ID: args[1]})
 		if err != nil {
 			return err
 		}
@@ -109,6 +77,104 @@ func run() error {
 			return usageError("delete requires session id")
 		}
 		result, err := store.Delete(ctx, session.DeleteInput{ID: args[1]})
+		if err != nil {
+			return err
+		}
+		return encode(os.Stdout, result)
+	case "write_message":
+		if len(args) != 2 {
+			return usageError("write_message requires session id")
+		}
+		var input session.WriteMessageInput
+		if err := decodeRequired(&input); err != nil {
+			return err
+		}
+		input.SessionID = args[1]
+		result, err := store.WriteMessage(ctx, input)
+		if err != nil {
+			return err
+		}
+		return encode(os.Stdout, result)
+	case "write_tool_call":
+		if len(args) != 2 {
+			return usageError("write_tool_call requires session id")
+		}
+		var input session.WriteToolCallInput
+		if err := decodeRequired(&input); err != nil {
+			return err
+		}
+		input.SessionID = args[1]
+		result, err := store.WriteToolCall(ctx, input)
+		if err != nil {
+			return err
+		}
+		return encode(os.Stdout, result)
+	case "write_tool_result":
+		if len(args) != 2 {
+			return usageError("write_tool_result requires session id")
+		}
+		var input session.WriteToolResultInput
+		if err := decodeRequired(&input); err != nil {
+			return err
+		}
+		input.SessionID = args[1]
+		result, err := store.WriteToolResult(ctx, input)
+		if err != nil {
+			return err
+		}
+		return encode(os.Stdout, result)
+	case "write_system_note":
+		if len(args) != 2 {
+			return usageError("write_system_note requires session id")
+		}
+		var input session.WriteSystemNoteInput
+		if err := decodeRequired(&input); err != nil {
+			return err
+		}
+		input.SessionID = args[1]
+		result, err := store.WriteSystemNote(ctx, input)
+		if err != nil {
+			return err
+		}
+		return encode(os.Stdout, result)
+	case "write_record":
+		if len(args) != 2 {
+			return usageError("write_record requires session id")
+		}
+		var input session.WriteRecordInput
+		if err := decodeRequired(&input); err != nil {
+			return err
+		}
+		input.SessionID = args[1]
+		result, err := store.WriteRecord(ctx, input)
+		if err != nil {
+			return err
+		}
+		return encode(os.Stdout, result)
+	case "set_metadata":
+		if len(args) != 2 {
+			return usageError("set_metadata requires session id")
+		}
+		var input session.SetMetadataInput
+		if err := decodeRequired(&input); err != nil {
+			return err
+		}
+		input.SessionID = args[1]
+		result, err := store.SetMetadata(ctx, input)
+		if err != nil {
+			return err
+		}
+		return encode(os.Stdout, result)
+	case "set_usage":
+		if len(args) != 2 {
+			return usageError("set_usage requires session id")
+		}
+		var input session.SetUsageInput
+		if err := decodeRequired(&input); err != nil {
+			return err
+		}
+		input.SessionID = args[1]
+		result, err := store.SetUsage(ctx, input)
 		if err != nil {
 			return err
 		}
@@ -158,6 +224,6 @@ func (e *exitError) Error() string {
 func usageError(message string) error {
 	return &exitError{
 		Code:    2,
-		Message: message + "\n\nusage: session-service -db sessions.db <version|create|resume|read|materialize|mutate|delete> [session-id]\n\ncreate input: {\"prompt\":\"...\"}",
+		Message: message + "\n\nusage: session-service -db sessions.db <version|create|get|delete|write_message|write_tool_call|write_tool_result|write_system_note|write_record|set_metadata|set_usage> [session-id]\n\ncreate input: {\"prompt\":\"...\"}\nwrite_message input: {\"text\":\"...\",\"role\":\"user\"}",
 	}
 }

@@ -36,13 +36,19 @@ type ModelInvoker interface {
 }
 
 // SessionStore is the kernel's outbound surface to the Session capability.
-// The kernel creates, resumes, materializes, and mutates sessions; it never
-// closes the store during a turn.
+// The kernel creates and gets sessions, and writes through the dedicated
+// record and state actions; it never closes the store during a turn.
 type SessionStore interface {
-	Create(ctx context.Context, input session.CreateInput) (*session.Session, error)
-	Resume(ctx context.Context, input session.ResumeInput) (*session.Session, error)
-	Materialize(ctx context.Context, input session.MaterializeInput) (*session.MaterializedSession, error)
-	Mutate(ctx context.Context, input session.MutateInput) (*session.Session, error)
+	Create(ctx context.Context, input session.CreateInput) (*session.CreateResult, error)
+	Get(ctx context.Context, input session.GetInput) (*session.Session, error)
+	Delete(ctx context.Context, input session.DeleteInput) (*session.DeleteResult, error)
+	WriteMessage(ctx context.Context, input session.WriteMessageInput) (*session.WriteResult, error)
+	WriteToolCall(ctx context.Context, input session.WriteToolCallInput) (*session.WriteResult, error)
+	WriteToolResult(ctx context.Context, input session.WriteToolResultInput) (*session.WriteResult, error)
+	WriteSystemNote(ctx context.Context, input session.WriteSystemNoteInput) (*session.WriteResult, error)
+	WriteRecord(ctx context.Context, input session.WriteRecordInput) (*session.WriteResult, error)
+	SetMetadata(ctx context.Context, input session.SetMetadataInput) (*session.SetResult, error)
+	SetUsage(ctx context.Context, input session.SetUsageInput) (*session.SetResult, error)
 }
 
 // ContextBuilder is the kernel's outbound surface to the Context Builder

@@ -7,7 +7,7 @@ import (
 
 const (
 	CapabilityName  = "session"
-	ContractVersion = "session.v0.1"
+	ContractVersion = "session.v0.3"
 )
 
 type ContractInfo struct {
@@ -142,20 +142,11 @@ const (
 
 type CreateInput struct {
 	Prompt   string          `json:"prompt"`
-	TurnID   string          `json:"turn_id,omitempty"`
 	Refs     []ContextRef    `json:"refs,omitempty"`
 	Metadata SessionMetadata `json:"metadata,omitempty"`
 }
 
-type ResumeInput struct {
-	ID string `json:"id"`
-}
-
-type ReadInput struct {
-	ID string `json:"id"`
-}
-
-type MaterializeInput struct {
+type GetInput struct {
 	ID string `json:"id"`
 }
 
@@ -163,40 +154,71 @@ type DeleteInput struct {
 	ID string `json:"id"`
 }
 
-type MutateInput struct {
-	ID             string       `json:"id,omitempty"`
-	IdempotencyKey string       `json:"idempotency_key,omitempty"`
-	Ops            []MutationOp `json:"ops"`
+type CreateResult struct {
+	ID      string       `json:"id"`
+	Version int64        `json:"version"`
+	State   SessionState `json:"state"`
 }
 
-type MutationOpType string
-
-const (
-	MutationAppendRecord MutationOpType = "append_record"
-	MutationSetMetadata  MutationOpType = "set_metadata"
-	MutationSetUsage     MutationOpType = "set_usage"
-)
-
-type MutationOp struct {
-	Type     MutationOpType   `json:"type"`
-	Record   *SessionRecord   `json:"record,omitempty"`
-	Metadata *SessionMetadata `json:"metadata,omitempty"`
-	Usage    *SessionUsage    `json:"usage,omitempty"`
+type DeleteResult struct {
+	ID      string       `json:"id"`
+	Version int64        `json:"version"`
+	State   SessionState `json:"state"`
 }
 
-type ContinuationKind string
+type WriteMessageInput struct {
+	SessionID string       `json:"session_id"`
+	Text      string       `json:"text"`
+	Role      string       `json:"role"`
+	Refs      []ContextRef `json:"refs,omitempty"`
+}
 
-const (
-	ContinuationOrderedRecords ContinuationKind = "ordered_records"
-)
+type WriteToolCallInput struct {
+	SessionID string         `json:"session_id"`
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+	CallID    string         `json:"call_id"`
+	ToolID    string         `json:"tool_id,omitempty"`
+	Refs      []ContextRef   `json:"refs,omitempty"`
+}
 
-type MaterializedSession struct {
-	SessionID string           `json:"session_id"`
-	Version   int64            `json:"version"`
-	State     SessionState     `json:"state"`
-	Kind      ContinuationKind `json:"kind"`
+type WriteToolResultInput struct {
+	SessionID string       `json:"session_id"`
+	Text      string       `json:"text"`
+	CallID    string       `json:"call_id"`
+	Refs      []ContextRef `json:"refs,omitempty"`
+}
 
-	Metadata SessionMetadata `json:"metadata"`
-	Usage    SessionUsage    `json:"usage"`
-	Records  []SessionRecord `json:"records"`
+type WriteSystemNoteInput struct {
+	SessionID string       `json:"session_id"`
+	Text      string       `json:"text"`
+	Refs      []ContextRef `json:"refs,omitempty"`
+}
+
+type WriteRecordInput struct {
+	SessionID string        `json:"session_id"`
+	Record    SessionRecord `json:"record"`
+}
+
+type WriteResult struct {
+	ID       string       `json:"id"`
+	RecordID string       `json:"record_id"`
+	Version  int64        `json:"version"`
+	State    SessionState `json:"state"`
+}
+
+type SetMetadataInput struct {
+	SessionID string          `json:"session_id"`
+	Metadata  SessionMetadata `json:"metadata"`
+}
+
+type SetUsageInput struct {
+	SessionID string       `json:"session_id"`
+	Usage     SessionUsage `json:"usage"`
+}
+
+type SetResult struct {
+	ID      string       `json:"id"`
+	Version int64        `json:"version"`
+	State   SessionState `json:"state"`
 }

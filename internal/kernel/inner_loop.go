@@ -139,7 +139,7 @@ func runInnerLoop(
 		})
 		if execFailure != nil {
 			// Persist any partial results so they are not lost.
-			newRecords = append(newRecords, buildToolResultRecords(turnID, execFailure.Results)...)
+			newRecords = append(newRecords, buildToolResultRecords(execFailure.Results)...)
 			return innerLoopResult{exitReason: ExitToolError, newRecords: newRecords}
 		}
 
@@ -149,7 +149,7 @@ func runInnerLoop(
 				observer.OnToolResult(r)
 			}
 		}
-		toolRecords := buildToolResultRecords(turnID, execResult.Results)
+		toolRecords := buildToolResultRecords(execResult.Results)
 		transcript = append(transcript, toolRecords...)
 		newRecords = append(newRecords, toolRecords...)
 

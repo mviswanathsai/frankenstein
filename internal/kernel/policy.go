@@ -54,32 +54,19 @@ func toolResultRequestsStop(results []toolinvocation.ToolResult) bool {
 	return false
 }
 
-// buildToolResultRecords converts ToolResults into SessionRecords for appending.
-// Each record gets kind: tool_result, role: tool.
-func buildToolResultRecords(turnID string, results []toolinvocation.ToolResult) []session.SessionRecord {
+// buildToolResultRecords converts ToolResults into SessionRecords for
+// appending via write_record. Record identity and turn grouping are owned by
+// the session service, so the kernel leaves id and turn_id empty.
+func buildToolResultRecords(results []toolinvocation.ToolResult) []session.SessionRecord {
 	records := make([]session.SessionRecord, 0, len(results))
 	for _, r := range results {
 		text := r.Text
 		records = append(records, session.SessionRecord{
-			TurnID:    turnID,
-			Kind:      session.RecordToolResult,
-			Role:      "tool",
-			CallID:    r.CallID,
-			Text:      &text,
-			Refs:      r.Refs,
-			ToolCalls: nil,
+			Kind:   session.RecordToolResult,
+			CallID: r.CallID,
+			Text:   &text,
+			Refs:   r.Refs,
 		})
 	}
 	return records
-}
-
-// buildAssistantRecord creates the final assistant message session record.
-// kind: message, role: assistant.
-func buildAssistantRecord(turnID string, content string) session.SessionRecord {
-	return session.SessionRecord{
-		TurnID: turnID,
-		Kind:   session.RecordMessage,
-		Role:   "assistant",
-		Text:   &content,
-	}
 }

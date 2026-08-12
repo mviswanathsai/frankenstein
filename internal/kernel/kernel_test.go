@@ -16,42 +16,121 @@ import (
 // --- Fake capability implementations ---
 
 type fakeSession struct {
-	created  *session.Session
-	mutated  []session.MutationOp
-	materialized *session.MaterializedSession
-	createErr  error
-	mutateErr  error
-	materializeErr error
-	resumeErr  error
+	created   *session.Session
+	createErr error
+	getErr    error
+	writeErr  error
+
+	writeMessages    []session.WriteMessageInput
+	writeToolCalls   []session.WriteToolCallInput
+	writeToolResults []session.WriteToolResultInput
+	writeSystemNotes []session.WriteSystemNoteInput
+	writeRecords     []session.WriteRecordInput
+	setMetadatas     []session.SetMetadataInput
+	setUsages        []session.SetUsageInput
+	deletes          []session.DeleteInput
 }
 
-func (f *fakeSession) Create(ctx context.Context, input session.CreateInput) (*session.Session, error) {
+func (f *fakeSession) Create(ctx context.Context, input session.CreateInput) (*session.CreateResult, error) {
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
-	return f.created, nil
+	if f.created == nil {
+		f.created = newTestSession("sess1")
+	}
+	return &session.CreateResult{
+		ID:      f.created.ID,
+		Version: f.created.Version,
+		State:   f.created.State,
+	}, nil
 }
 
-func (f *fakeSession) Resume(ctx context.Context, input session.ResumeInput) (*session.Session, error) {
-	if f.resumeErr != nil {
-		return nil, f.resumeErr
+func (f *fakeSession) Get(ctx context.Context, input session.GetInput) (*session.Session, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if f.created == nil {
+		return nil, session.ErrNotFound
 	}
 	return f.created, nil
 }
 
-func (f *fakeSession) Materialize(ctx context.Context, input session.MaterializeInput) (*session.MaterializedSession, error) {
-	if f.materializeErr != nil {
-		return nil, f.materializeErr
+func (f *fakeSession) Delete(ctx context.Context, input session.DeleteInput) (*session.DeleteResult, error) {
+	f.deletes = append(f.deletes, input)
+	if f.created == nil {
+		return nil, session.ErrNotFound
 	}
-	return f.materialized, nil
+	return &session.DeleteResult{
+		ID:      f.created.ID,
+		Version: f.created.Version,
+		State:   session.SessionDeleted,
+	}, nil
 }
 
-func (f *fakeSession) Mutate(ctx context.Context, input session.MutateInput) (*session.Session, error) {
-	if f.mutateErr != nil {
-		return nil, f.mutateErr
+func (f *fakeSession) WriteMessage(ctx context.Context, input session.WriteMessageInput) (*session.WriteResult, error) {
+	if f.writeErr != nil {
+		return nil, f.writeErr
 	}
-	f.mutated = append(f.mutated, input.Ops...)
-	return f.created, nil
+	f.writeMessages = append(f.writeMessages, input)
+	return &session.WriteResult{ID: input.SessionID, RecordID: "rec_new", Version: f.version(), State: session.SessionActive}, nil
+}
+
+func (f *fakeSession) WriteToolCall(ctx context.Context, input session.WriteToolCallInput) (*session.WriteResult, error) {
+	if f.writeErr != nil {
+		return nil, f.writeErr
+	}
+	f.writeToolCalls = append(f.writeToolCalls, input)
+	return &session.WriteResult{ID: input.SessionID, RecordID: "rec_new", Version: f.version(), State: session.SessionActive}, nil
+}
+
+func (f *fakeSession) WriteToolResult(ctx context.Context, input session.WriteToolResultInput) (*session.WriteResult, error) {
+	if f.writeErr != nil {
+		return nil, f.writeErr
+	}
+	f.writeToolResults = append(f.writeToolResults, input)
+	return &session.WriteResult{ID: input.SessionID, RecordID: "rec_new", Version: f.version(), State: session.SessionActive}, nil
+}
+
+func (f *fakeSession) WriteSystemNote(ctx context.Context, input session.WriteSystemNoteInput) (*session.WriteResult, error) {
+	if f.writeErr != nil {
+		return nil, f.writeErr
+	}
+	f.writeSystemNotes = append(f.writeSystemNotes, input)
+	return &session.WriteResult{ID: input.SessionID, RecordID: "rec_new", Version: f.version(), State: session.SessionActive}, nil
+}
+
+func (f *fakeSession) WriteRecord(ctx context.Context, input session.WriteRecordInput) (*session.WriteResult, error) {
+	if f.writeErr != nil {
+		return nil, f.writeErr
+	}
+	f.writeRecords = append(f.writeRecords, input)
+	return &session.WriteResult{ID: input.SessionID, RecordID: input.Record.ID, Version: f.version(), State: session.SessionActive}, nil
+}
+
+func (f *fakeSession) SetMetadata(ctx context.Context, input session.SetMetadataInput) (*session.SetResult, error) {
+	if f.writeErr != nil {
+		return nil, f.writeErr
+	}
+	f.setMetadatas = append(f.setMetadatas, input)
+	if f.created != nil {
+		f.created.Metadata = input.Metadata
+	}
+	return &session.SetResult{ID: input.SessionID, Version: f.version(), State: session.SessionActive}, nil
+}
+
+func (f *fakeSession) SetUsage(ctx context.Context, input session.SetUsageInput) (*session.SetResult, error) {
+	if f.writeErr != nil {
+		return nil, f.writeErr
+	}
+	f.setUsages = append(f.setUsages, input)
+	return &session.SetResult{ID: input.SessionID, Version: f.version(), State: session.SessionActive}, nil
+}
+
+func (f *fakeSession) version() int64 {
+	if f.created == nil {
+		return 1
+	}
+	return f.created.Version + 1
 }
 
 type fakeTools struct {
@@ -275,45 +354,31 @@ func TestBuildToolResultRecords(t *testing.T) {
 		CallID: "tc1",
 		Text:   "result text",
 	}}
-	records := buildToolResultRecords("turn1", results)
+	records := buildToolResultRecords(results)
 	if len(records) != 1 {
 		t.Fatalf("got %d records, want 1", len(records))
 	}
 	if records[0].Kind != session.RecordToolResult {
 		t.Errorf("kind = %s, want %s", records[0].Kind, session.RecordToolResult)
 	}
-	if records[0].Role != "tool" {
-		t.Errorf("role = %s, want tool", records[0].Role)
-	}
 	if records[0].CallID != "tc1" {
 		t.Errorf("callID = %s, want tc1", records[0].CallID)
 	}
-	if records[0].TurnID != "turn1" {
-		t.Errorf("turnID = %s, want turn1", records[0].TurnID)
+	if records[0].Text == nil || *records[0].Text != "result text" {
+		t.Errorf("text = %v, want result text", records[0].Text)
 	}
-}
-
-func TestBuildAssistantRecord(t *testing.T) {
-	rec := buildAssistantRecord("turn1", "hello world")
-	if rec.Kind != session.RecordMessage {
-		t.Errorf("kind = %s, want %s", rec.Kind, session.RecordMessage)
+	// Turn grouping and identity are owned by the session service.
+	if records[0].TurnID != "" {
+		t.Errorf("turnID = %s, want empty", records[0].TurnID)
 	}
-	if rec.Role != "assistant" {
-		t.Errorf("role = %s, want assistant", rec.Role)
-	}
-	if *rec.Text != "hello world" {
-		t.Errorf("text = %s, want hello world", *rec.Text)
+	if records[0].Role != "" {
+		t.Errorf("role = %s, want empty", records[0].Role)
 	}
 }
 
 func TestNewSession(t *testing.T) {
 	k, fs, ft, fm, fb, fc := newTestKernel()
 	fs.created = newTestSession("sess1")
-	fs.materialized = &session.MaterializedSession{
-		SessionID: "sess1",
-		Records:   fs.created.Records,
-		Metadata:  fs.created.Metadata,
-	}
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
 	fc.initBundle = &contextprovider.ContextBundle{}
 	fm.result = completeTurnResult("hello from model")
@@ -357,17 +422,16 @@ func TestNewSession(t *testing.T) {
 		t.Errorf("cached SystemPromptID = %s, want abc123", cached.SystemPromptID)
 	}
 
-	// Final assistant record should be appended.
+	// Final assistant message should be written through WriteMessage.
 	found := false
-	for _, op := range fs.mutated {
-		if op.Type == session.MutationAppendRecord && op.Record != nil &&
-			op.Record.Kind == session.RecordMessage && op.Record.Role == "assistant" {
+	for _, wm := range fs.writeMessages {
+		if wm.Role == "assistant" && wm.Text == "hello from model" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("final assistant record not found in mutations")
+		t.Error("final assistant message not written")
 	}
 }
 
@@ -419,11 +483,6 @@ func TestContinueReusesPrefix(t *testing.T) {
 	raw, _ := json.Marshal(prefix)
 	sess.Metadata.Custom[builtPrefixKey] = raw
 	fs.created = sess
-	fs.materialized = &session.MaterializedSession{
-		SessionID: "sess1",
-		Records:   sess.Records,
-		Metadata:  sess.Metadata,
-	}
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
 	fc.getBundle = &contextprovider.ContextBundle{}
 	fm.result = completeTurnResult("continued response")
@@ -468,11 +527,6 @@ func TestSessionBudgetBlocksContinue(t *testing.T) {
 func TestToolStopRequestedExits(t *testing.T) {
 	k, fs, ft, fm, fb, fc := newTestKernel()
 	fs.created = newTestSession("sess1")
-	fs.materialized = &session.MaterializedSession{
-		SessionID: "sess1",
-		Records:   fs.created.Records,
-		Metadata:  fs.created.Metadata,
-	}
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
 	fc.initBundle = &contextprovider.ContextBundle{}
 	fb.estimateAlloc = contextbuilder.Allocation{OutputReservation: 100}
@@ -515,11 +569,6 @@ func TestToolStopRequestedExits(t *testing.T) {
 func TestModelErrorExit(t *testing.T) {
 	k, fs, ft, fm, fb, fc := newTestKernel()
 	fs.created = newTestSession("sess1")
-	fs.materialized = &session.MaterializedSession{
-		SessionID: "sess1",
-		Records:   fs.created.Records,
-		Metadata:  fs.created.Metadata,
-	}
 	// No catalog or context needed since model fails immediately.
 	fc.initBundle = &contextprovider.ContextBundle{}
 	fb.estimateAlloc = contextbuilder.Allocation{OutputReservation: 100}
@@ -550,11 +599,6 @@ func TestTurnBudgetExhausted(t *testing.T) {
 	k, fs, ft, fm, fb, fc := newTestKernel()
 	k.cfg.TurnBudget = 2 // small budget
 	fs.created = newTestSession("sess1")
-	fs.materialized = &session.MaterializedSession{
-		SessionID: "sess1",
-		Records:   fs.created.Records,
-		Metadata:  fs.created.Metadata,
-	}
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
 	fc.initBundle = &contextprovider.ContextBundle{}
 	fb.estimateAlloc = contextbuilder.Allocation{OutputReservation: 100}
