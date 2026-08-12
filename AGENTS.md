@@ -205,6 +205,13 @@ a black box. A helper function is not a capability. The cost of swapping a small
 internal policy is writing a new service that implements the whole contract;
 that cost is intentional.
 
+After implementing a contract, check for drift between the contract document
+and the implementation. The contract is the stable surface; the implementation
+may discover a cleaner shape during the work. When it does, surface the drift
+and update the contract to match. Do not leave the contract describing shapes
+that the implementation has already moved past. This check is a required step
+after any implementation that touches contract surfaces.
+
 ## Design Stances
 
 - Events are the semantic record; transport is an implementation detail. The

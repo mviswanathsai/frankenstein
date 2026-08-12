@@ -1,8 +1,8 @@
 # Context Builder Service Dossier
 
-Date: 2026-08-08
+Date: 2026-08-12
 
-Contract version: `context_builder.v0`.
+Contract version: `context_builder.v0.1`.
 
 Status: draft.
 
@@ -154,29 +154,29 @@ for correlation only; receiving it grants no capability access.
 
 ### Context Provider (`context_provider.v0.1`)
 
-Context Builder **consumes** context file content via the `ContextEntry[]` input
-to `prepare`. Each `ContextEntry` carries a `slot` field re-emitted from the
-provider's `ContextSlot` so the builder can partition entries by origin
-category. The builder may format or order entries per its template.
+Context Builder **consumes** `ContextBundle` values as input to both
+`assemble` and `prepare`. The builder reads the `ContextSlot` on each
+candidate to decide where it belongs — retained candidates go into the
+system prompt, per-call candidates are injected into messages per the
+builder's template.
 
 The builder does not call Context Provider. The kernel calls Context Provider,
-trims the results to fit `Allocation.max_context_tokens`, and passes them to
-`prepare`.
+trims the results to fit the allocation budget, and passes them to `assemble`
+and `prepare`.
 
 ### Tool Invocation (`tool_invocation.v0`)
 
-Context Builder **consumes** the canonical `ToolCatalog` as a passthrough on
-the `prepare` request. It does not add, remove, or semantically change tool
-definitions. The catalog passes through unchanged to `ModelInput`.
+Context Builder **consumes** the canonical `ToolCatalog` on `assemble` for
+tool awareness text in the system prompt. The builder extracts tool names and
+descriptions from `ToolDefinition` entries and formats them per its template.
 
-Separately, the builder receives `ToolSnippet[]` (one-line description text) on
-`assemble` and formats them into the system prompt. These snippets are not the
-tool schema — they are model-facing awareness text. The kernel extracts snippet
-text from the catalog; the builder formats it.
+The catalog does not appear on `prepare`. Tools do not change mid-run. The
+kernel passes the catalog directly to Model Invocation alongside the
+`ModelInput` returned by `prepare`.
 
 Catalog ordering is Tool Invocation's concern. The builder preserves the order
-it receives. The builder controls only where the tool block appears in the
-system prompt, not the order within the tool list.
+it receives for the tool awareness block. The builder controls only where the
+tool block appears in the system prompt, not the order within the tool list.
 
 ### Model Invocation (`model_invocation.v0`)
 
@@ -225,32 +225,18 @@ the terminal event appended by the mediator.
 - `stub: TranscriptStub` — lightweight transcript summary with `message_count`
   and `estimated_tokens`
 
+- **`assemble` input is `ContextBundle[]` + optional `ToolCatalog`.** The
+  contract no longer defines `ContextContent`, `SkillSummary`, or
+  `ToolSnippet`. The builder reads slots from bundles to decide placement.
+  The catalog provides tool awareness text.
+
 ### `context_builder.assemble`
 
-- `id` — request identity
-- `session_id` (optional) — session correlation only
-- `model` — the model identity (required)
-- `provider` — the provider identity (required)
-- `instructions: ContextContent[]` — project instruction content, sized per
-  the allocation budget
-- `skills: SkillSummary[]` — enabled skill summaries
-- `tool_snippets: ToolSnippet[]` — one-line tool descriptions
-- `first_user_message` (optional) — first user message for intent-based prompt
-  customization
+- **`prepare` input is `BuiltPrefix` + `SessionRecord[]` + `ContextBundle[]`.** 
+  Per-call context from bundles is injected per the builder's template. No
+  catalog — tools are static within a run.
 
 ### `context_builder.prepare`
-
-- `id` — request identity
-- `session_id` (optional) — session correlation only
-- `turn_id` (optional) — turn correlation only
-- `prefix: BuiltPrefix` — the assembled prefix from the most recent `assemble`
-  call (required)
-- `transcript: SessionRecord[]` — materialized session transcript (required,
-  must be non-empty)
-- `catalog: ToolCatalog` (optional) — the canonical tool catalog, sized per
-  allocation budget
-- `context: ContextEntry[]` (optional) — context file content, sized per
-  allocation budget
 
 ## Outputs
 
@@ -276,7 +262,8 @@ the terminal event appended by the mediator.
 - `ModelInput`, `ModelMessage`, `ModelMessageRole` are reused from
   `model_invocation.v0`
 - `ToolCatalog` is reused from `tool_invocation.v0`
-- `ContextSlot` is reused from `context_provider.v0.1`
+- `ContextBundle`, `ContextCollection`, `ContextSlot`, `ContextCandidate` are reused from
+  `context_provider.v0.1`
 - `SessionRecord` is reused from `session.v0.3`
 - `TokenCount` is reused from `session.v0.3`
 
@@ -439,9 +426,9 @@ contract reconciliation, not changes to the current draft by themselves.
   characters.** Identical `assemble` inputs produce the same ID. The ID lets
   invocation events reference the prompt without inlining it.
 
-- **`first_user_message` is an optional input to `assemble`** for intent-based
-  prompt customization. The builder may use it to emphasise relevant tools or
-  skills, or ignore it.
+- ~~**`first_user_message` is an optional input to `assemble`** for intent-based
+  prompt customization.~~ **Superseded in v0.1.** Dropped. No clear use case
+  that isn't covered by the transcript, and the implementation never used it.
 
 - **Template-as-config: the builder assembles the system prompt from a
   configured template.** Template structure, block ordering, formatting, and
@@ -485,10 +472,13 @@ contract reconciliation, not changes to the current draft by themselves.
   that may have been compressed; it does not trigger compression, call a
   compression service, or track compression state.
 
-- **Tool schemas travel separately from the builder's output.** Tool snippets
+- ~~**Tool schemas travel separately from the builder's output.** Tool snippets
   (one-line descriptions) are part of the system prompt assembly. The full
   `ToolCatalog` travels as a separate argument on `prepare` and passes through
-  unchanged to the `ModelInput`.
+  unchanged to the `ModelInput`.~~ **Superseded in v0.1.** `ToolCatalog` is
+  removed from `prepare`. Tools do not change mid-run, and tool awareness text
+  lives in the system prompt assembled by `assemble`. The kernel passes the
+  catalog directly to Model Invocation alongside the `ModelInput`.
 
 - **System prompt ordering follows Pi/Hermes convention in v0.** Research
   (Lost in the Middle, primacy/recency studies) confirms that placement within
@@ -509,6 +499,49 @@ contract reconciliation, not changes to the current draft by themselves.
   clean. The adapter reads notes to decide per-provider handling; the model
   reads notes for observability. This doubles as the normalization
   observability surface — every transform is recorded.
+
+### v0.1 Contract Reconciliation (2026-08-12)
+
+These decisions update the contract from `context_builder.v0` to
+`context_builder.v0.1`. The v0 implementation in `internal/contextbuilder/`
+already reflected several of these; the contract was updated to match.
+
+- **`ContextBundle` replaces standalone input shapes.** `ContextContent`,
+  `SkillSummary`, `ToolSnippet`, and `ContextEntry` are removed from the
+  contract. `assemble` and `prepare` both accept `ContextBundle[]` directly
+  from Context Provider. The builder reads `ContextSlot` from each candidate
+  to decide placement — the kernel no longer pre-sorts context into
+  type-specific arrays. This was the implementation's shape from the start;
+  the contract was out of date.
+
+- **`ToolCatalog` removed from `prepare`.** Tools do not change mid-run. Tool
+  awareness text lives in the system prompt, which `assemble` owns. The
+  catalog on `prepare` served no purpose — `ModelInput` does not carry a
+  catalog. The kernel passes the catalog directly to Model Invocation
+  alongside the `ModelInput`.
+
+- **`provider` stays on `assemble`.** Optional. A builder may adapt its prompt
+  for a specific provider. Provider-specific wire encoding remains Model
+  Invocation's job.
+
+- **`first_user_message` dropped from `assemble`.** No clear use case not
+  covered by the transcript, and the implementation never used it.
+
+- **`context_window_tokens` added to `EstimateRequest`.** The builder needs to
+  know the total window size to divide it. Previously this was implicit;
+  made explicit as a required field.
+
+- **Estimation is strictly builder-owned.** The kernel must not perform
+  additional math on returned allocation values or override the budget split.
+  If the kernel needs a different split, it replaces the builder service.
+
+- **Contract-implementation drift surfaced.** The v0 contract described a
+  world with `ContextContent`, `SkillSummary`, `ToolSnippet`, and
+  `ContextEntry` while the implementation had already moved to `ContextBundle`
+  and `ToolCatalog`. This drift was a failure mode: agents implemented the
+  cleaner shape but didn't update the contract. A rule was added to
+  `AGENTS.md` requiring agents to check for and surface contract drift after
+  implementation.
 
 ### Implementation Notes
 
@@ -559,7 +592,9 @@ contract reconciliation, not changes to the current draft by themselves.
   provide a non-zero reservation or default to leaving it to the kernel is an
   open implementation choice.
 
-- **Skill vs instruction ordering.** The builder receives `instructions` and
+- ~~**Skill vs instruction ordering.** The builder receives `instructions` and
   `skills` as separate inputs. How they are ordered and formatted relative to
   each other in the system prompt is a template decision. The contract does not
-  prescribe ordering.
+  prescribe ordering.~~ **Superseded in v0.1.** The builder receives
+  `ContextBundle` instead of type-specific arrays. Slot ordering is a template
+  decision; the builder reads the slot from each candidate to decide placement.

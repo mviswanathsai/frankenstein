@@ -1,8 +1,8 @@
 # Context Builder Capability Contract
 
-Date: 2026-08-08
+Date: 2026-08-12
 
-Contract version: `context_builder.v0`.
+Contract version: `context_builder.v0.1`.
 
 Status: draft.
 
@@ -10,23 +10,33 @@ This document defines what the rest of the harness may expect from a Context
 Builder service. It is a capability contract, not an HTTP API, database
 schema, or implementation plan.
 
-Design evidence and boundary reasoning will be recorded in
+Design evidence and boundary reasoning live in
 `docs/context-builder-service-dossier.md`. Research into existing systems
 lives in `docs/research/context-builder-patterns.md`.
+
+`context_builder.v0.1` replaces the standalone input shapes of v0 —
+`ContextContent`, `SkillSummary`, `ToolSnippet`, and `ContextEntry` — with
+`ContextBundle` from `context_provider.v0.1`. The builder reads slot
+information from bundles to decide candidate placement; the kernel no longer
+pre-sorts context into type-specific arrays. `ToolCatalog` is available on
+`assemble` for tool awareness text but is removed from `prepare` (tools do
+not change mid-run). `provider` remains as metadata for builder adaptations.
+Estimation remains strictly builder-owned.
 
 ## Purpose
 
 Context Builder is the single point of contact for "what the model sees." It
 has three actions: estimate resource allocation for a session window, assemble
-a byte-stable system prompt from session-scoped inputs, and prepare a
-per-turn `ModelInput` from that prompt and the current transcript.
+a byte-stable system prompt from retained context and tool awareness, and
+prepare a per-turn `ModelInput` from that prompt, the current transcript, and
+per-call context.
 
 The service:
 
 - owns the division of the model's context window among tools, context
   files, and transcript messages
-- assembles the system prompt from configured templates and session-scoped
-  inputs
+- assembles the system prompt from retained context candidates and tool
+  awareness text
 - normalizes the session transcript into model-facing messages
 - produces a content-addressed identifier for the assembled system prompt
   so invocation events can reference it without inlining
@@ -76,6 +86,7 @@ Input:
 EstimateRequest {
   id
   model
+  context_window_tokens
   stub: TranscriptStub
 }
 ```
@@ -83,6 +94,9 @@ EstimateRequest {
 `id` identifies this request. Terminal payloads refer to it as `request_id`.
 
 `model` is required. It is the model identity the session will invoke.
+
+`context_window_tokens` is the model's total context window size in tokens.
+Required, must be greater than zero.
 
 `stub` is a lightweight transcript summary. The builder uses it to reserve
 space for the messages that Session will materialize:
@@ -112,15 +126,15 @@ Allocation {
 ```
 
 `system_prompt_tokens` is the maximum token budget for the builder's own
-system prompt. The caller sizes project instructions, skills text, and tool
-snippets to fit within this budget before calling `assemble`.
+system prompt. The caller sizes context bundles to fit within this budget
+before calling `assemble`.
 
 `max_tools_tokens` is the budget for tool definitions. The caller uses it
-to request a sized catalog from Tool Invocation before calling `prepare`.
+to request a sized catalog from Tool Invocation before calling `assemble`.
 
 `max_context_tokens` is the budget for context file content. The caller
 uses it to request a sized context bundle from Context Provider before
-calling `prepare`.
+calling `assemble`.
 
 `max_transcript_tokens` is the budget for the materialized session
 transcript. The caller uses it to select or trim messages from Session
@@ -135,6 +149,11 @@ estimation policy uses a different approximation. The allocation is a
 budget recommendation, not a strict guarantee. The caller may adjust any
 value before using it.
 
+The allocation is the builder's decision. The kernel must not perform
+additional math on returned allocation values or override the builder's
+budget split. If the kernel needs a different split, it replaces the
+builder service — not the allocation after the fact.
+
 Terminal events:
 
 - `context_builder.estimated`
@@ -147,7 +166,8 @@ event record.
 
 ### `context_builder.assemble`
 
-Assemble the session-scoped system prompt from sized inputs.
+Assemble the session-scoped system prompt from retained context and tool
+awareness.
 
 Input:
 
@@ -156,65 +176,58 @@ AssembleRequest {
   id
   session_id?
   model
-  provider
-  instructions: ContextContent[]
-  skills: SkillSummary[]
-  tool_snippets: ToolSnippet[]
-  first_user_message?
+  provider?
+  context: ContextBundle[]
+  catalog?: ToolCatalog
 }
 ```
 
 `session_id` identifies the current session when known. Correlation only.
 
-`model` and `provider` are required. They identify the model and provider
-the session will invoke. The builder may use them for model-specific prompt
-adaptations.
+`model` is required. It identifies the model the session will invoke. The
+builder may use it for model-specific prompt adaptations.
 
-`instructions` is project instruction content, sized per
-`Allocation.system_prompt_tokens`. Each entry carries the content the
-caller loaded from the workspace:
+`provider` is the provider identity. Optional. The builder may use it for
+provider-specific prompt adaptations. Provider-specific wire encoding
+remains Model Invocation's responsibility.
+
+`context` carries context bundles from Context Provider, sized per
+`Allocation.max_context_tokens`. Each bundle contains both retained and
+per-call candidates grouped by slot. The builder reads the slot on each
+candidate to decide where it belongs in the system prompt. Slot ordering,
+block formatting, and candidate layout are builder template decisions. The
+kernel does the trimming before calling `assemble`; the builder does not
+trim.
 
 ```text
-ContextContent {
-  path
+ContextBundle {
+  retained: ContextCollection
+  per_call: ContextCollection
+}
+
+ContextCollection {
+  buckets: map<ContextSlot, ContextCandidate[]>
+  referenced: ContextCandidate[]
+}
+
+ContextCandidate {
+  id
   content
+  refs?: ContextRef[]
 }
 ```
 
-`path` identifies the source file (e.g. `AGENTS.md`). `content` is the
-file text, trimmed to fit the system prompt budget. The caller does the
-trimming; the builder orders entries.
+The builder reads the slot on each candidate to decide where it belongs in
+the system prompt. Slot ordering, block formatting, and candidate layout are
+builder template decisions. The kernel does the trimming before calling
+`assemble`; the builder does not trim.
 
-`skills` is skill summary text for skills enabled for this session:
-
-```text
-SkillSummary {
-  name
-  description
-  location
-}
-```
-
-The builder formats these into the system prompt per its template.
-
-`tool_snippets` is one-line text descriptions of the tools available to the
-model:
-
-```text
-ToolSnippet {
-  name
-  description
-}
-```
-
-`name` is the canonical tool name from the catalog. `description` is a
-concise summary. The builder formats these into the system prompt. This is
-not the tool schema — `ToolDefinition.input_schema` travels separately
-through the catalog. Tool snippets are model-facing awareness text.
-
-`first_user_message` is the first user message of the session, when known.
-Optional. The builder may use it for intent-based prompt customization
-(e.g. emphasizing relevant tools or skills) or ignore it.
+`catalog` is the canonical `ToolCatalog` from `tool_invocation.v0`, sized
+per `Allocation.max_tools_tokens`. It is optional — a builder that does not
+inject tool awareness text into the system prompt may ignore it. When
+present, the builder may extract tool names and descriptions for a tool
+awareness block. The full `ToolDefinition` schema travels separately with
+Model Invocation, not in the system prompt.
 
 Successful terminal output:
 
@@ -255,8 +268,7 @@ PrepareRequest {
   turn_id?
   prefix: BuiltPrefix
   transcript: SessionRecord[]
-  catalog?: ToolCatalog
-  context?: ContextEntry[]
+  context: ContextBundle[]
 }
 ```
 
@@ -272,27 +284,15 @@ session transcript from Session, trimmed to fit
 model-facing messages: drops scaffolding and errored turns, synthesizes
 missing tool results, and converts internal markers to model-readable text.
 
-`catalog` is the canonical `ToolCatalog` from `tool_invocation.v0`, sized
-per `Allocation.max_tools_tokens`. It is absent for tool-less turns. The
-builder passes it through unchanged; it does not add, remove, or
-semantically change definitions.
+`context` carries context bundles from Context Provider, sized per
+`Allocation.max_context_tokens`. The builder reads the slot on each
+candidate to decide injection placement. For example, memory candidates may
+be appended to the last user message.
 
-`context` is context file content from Context Provider, sized per
-`Allocation.max_context_tokens`:
-
-```text
-ContextEntry {
-  file_path
-  content
-  slot
-}
-```
-
-`file_path` identifies the source file. `content` is the file text.
-`slot` is the `ContextSlot` from `context_provider.v0.1`, re-emitted so
-the builder can partition entries by their origin category. The builder
-may format or order entries per its template. The caller trims to fit the
-budget.
+The catalog is not an input to `prepare`. Tools do not change mid-run, and
+tool awareness text lives in the system prompt assembled by `assemble`. The
+kernel passes the catalog directly to Model Invocation alongside the
+`ModelInput` returned by `prepare`.
 
 Successful terminal output:
 
@@ -360,8 +360,11 @@ ID.
 
 ## Invariants
 
-- `estimate` must be called before `assemble`. The caller sizes inputs to
-  `assemble` using the `Allocation.system_prompt_tokens` budget.
+- `estimate` must be called before `assemble` when the kernel intends to
+  size inputs. The caller sizes inputs to `assemble` using the returned
+  `Allocation` budget fields.
+- The allocation is the builder's decision. The kernel must not perform
+  additional math on the returned budget values or override the split.
 - `assemble` is called once per session unless the kernel explicitly
   invalidates the prefix (model switch, configuration change). Calling it
   again with identical inputs must return an identical `BuiltPrefix`.
@@ -369,8 +372,8 @@ ID.
   `BuiltPrefix` and the current transcript.
 - `prepare` must not mutate the transcript, catalog, or context entries.
   It produces `ModelInput` from what it receives.
-- Catalog and context entries pass through unchanged; the builder does not
-  add, remove, or semantically change them. Trimming to fit the budget is
+- Context candidates pass through unchanged; the builder does not add,
+  remove, or semantically change them. Trimming to fit the budget is
   the caller's responsibility.
 - `system_prompt_id` is a SHA-256 hash of the full `system_prompt` text,
   truncated to 16 hex characters.
@@ -382,6 +385,8 @@ ID.
 Expected failures:
 
 - missing `model` on any request fails as `invalid_request`
+- missing or zero `context_window_tokens` on `estimate` fails as
+  `invalid_request`
 - empty or missing `transcript` on `prepare` fails as `invalid_request`
 - missing `prefix` on `prepare` fails as `invalid_request`
 - an unsupported action returns the project-wide `capability.unsupported`
@@ -399,15 +404,16 @@ builder is never re-invoked on replay.
 
 This contract reuses:
 
-- `ToolCatalog` from `tool_invocation.v0`
-- `ContextSlot` from `context_provider.v0.1`
+- `ContextBundle`, `ContextCollection`, `ContextBuckets`, `ContextSlot`,
+  `ContextCandidate`, `ContextRef` from `context_provider.v0.1`
+- `ToolCatalog`, `ToolDefinition` from `tool_invocation.v0`
 - `SessionRecord` from `session.v0.3`
 - `ModelInput`, `ModelMessage`, `ModelMessageRole` from
   `model_invocation.v0`
 
-It does not redefine them. Context Builder consumes `ContextSlot` and
-`SessionRecord`, produces `ModelInput`, and passes `ToolCatalog` through
-unchanged.
+It does not redefine them. Context Builder consumes `ContextBundle` and
+`SessionRecord`, produces `ModelInput`, and reads `ToolCatalog` for tool
+awareness text in the system prompt.
 
 `session_id` and `turn_id` follow the same correlation convention as the
 other contracts: they identify the current session and turn when known, and
