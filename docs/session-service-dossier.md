@@ -192,13 +192,15 @@ These decisions shaped the v0.3 surface. Source: collaborator session
   The contract already stated other capabilities cannot assume it is present.
   Services may store it privately.
 
-- **`set_usage` uses merge semantics, usage is solely kernel-owned.** The store
-  no longer auto-updates session usage on record writes. The kernel is the sole
-  writer: it reads current usage, overlays provider-verified token counts, and
-  writes back via `set_usage`. Merge semantics let the kernel supply only the
-  fields it changed without carrying every other field. Split ownership by
-  field, no coordination needed. The auto-update approach was removed to avoid
-  two concurrent update paths for the same object.
+- **`set_usage` uses merge semantics. Usage maintenance strategy is an
+  implementation decision.** The contract requires only that `set_usage` exists
+  and merges provided fields (overwrite present, preserve absent). How a service
+  maintains usage between calls — auto-computing from record writes, leaving it
+  to the kernel, or a mix — is implementation philosophy. The reference
+  implementation places ownership with the kernel: it reads current usage,
+  overlays provider-verified token counts, and writes back via `set_usage`. The
+  store does not auto-update on record writes. Alternate implementations may
+  choose differently.
 
 ## Open Questions
 
