@@ -192,14 +192,13 @@ These decisions shaped the v0.3 surface. Source: collaborator session
   The contract already stated other capabilities cannot assume it is present.
   Services may store it privately.
 
-- **`set_usage` uses merge semantics.** The store auto-computes record-derived
-  fields (char_count, last_prompt_tokens) on every record write. The kernel
-  supplies provider-verified token counts via `set_usage`, which merges
-  provided fields into the current usage object — overwrite what was provided,
-  preserve what was absent. Split ownership by field, no coordination needed.
-  The ideal future direction is auto-update (record writes automatically
-  update session-level usage), but the explicit merge is more flexible for an
-  evolving harness.
+- **`set_usage` uses merge semantics, usage is solely kernel-owned.** The store
+  no longer auto-updates session usage on record writes. The kernel is the sole
+  writer: it reads current usage, overlays provider-verified token counts, and
+  writes back via `set_usage`. Merge semantics let the kernel supply only the
+  fields it changed without carrying every other field. Split ownership by
+  field, no coordination needed. The auto-update approach was removed to avoid
+  two concurrent update paths for the same object.
 
 ## Open Questions
 

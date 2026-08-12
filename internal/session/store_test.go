@@ -575,7 +575,7 @@ func TestGetOrdersRecordsBySessionSeq(t *testing.T) {
 	}
 }
 
-func TestAppendRecordCreatesEstimatedPromptState(t *testing.T) {
+func TestRecordWritesPreserveExistingUsage(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 
@@ -583,6 +583,13 @@ func TestAppendRecordCreatesEstimatedPromptState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+
+	// Capture usage after create (initialized from the first record).
+	got, err := store.Get(ctx, GetInput{ID: created.ID})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	initialUsage := got.Usage
 
 	write, err := store.WriteMessage(ctx, WriteMessageInput{
 		SessionID: created.ID,
@@ -596,7 +603,7 @@ func TestAppendRecordCreatesEstimatedPromptState(t *testing.T) {
 		t.Fatalf("Version = %d, want 2", write.Version)
 	}
 
-	got, err := store.Get(ctx, GetInput{ID: created.ID})
+	got, err = store.Get(ctx, GetInput{ID: created.ID})
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -613,11 +620,11 @@ func TestAppendRecordCreatesEstimatedPromptState(t *testing.T) {
 	if record.Tokens != (TokenCount{Value: 3, Source: TokenSourceCharEstimate}) {
 		t.Fatalf("record.Tokens = %+v, want char estimate 3", record.Tokens)
 	}
-	if got.Usage.CharCount != 12 {
-		t.Fatalf("Usage.CharCount = %d, want 12", got.Usage.CharCount)
-	}
-	if got.Usage.LastPromptTokens != (TokenCount{Value: 3, Source: TokenSourceCharEstimate}) {
-		t.Fatalf("LastPromptTokens = %+v, want estimated 3", got.Usage.LastPromptTokens)
+
+	// Record writes must not auto-update session usage. Usage is owned
+	// by the kernel, which updates it via SetUsage.
+	if got.Usage != initialUsage {
+		t.Fatalf("Usage changed on record write: got %+v, want %+v", got.Usage, initialUsage)
 	}
 }
 

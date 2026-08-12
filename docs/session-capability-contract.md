@@ -144,7 +144,7 @@ and whether it came from a character estimate, a tokenizer, or a provider.
 Unknown values may be zero. `last_context_used_pct` records the most recent
 known fraction of the model context window used.
 
-`set_usage` merges the provided fields into the current usage object. Fields present in the input overwrite the current values; absent fields are left untouched. This lets the kernel supply provider-verified token counts without carrying the store's auto-computed char estimates.
+`set_usage` merges the provided fields into the current usage object. Fields present in the input overwrite the current values; absent fields are left untouched. The kernel owns session usage — it is the sole writer. The store does not auto-update usage on record writes.
 
 ## Session Record
 

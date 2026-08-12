@@ -240,7 +240,6 @@ func (s *Store) writeRecord(ctx context.Context, sessionID string, record Sessio
 	}
 
 	current.Records = append(current.Records, record)
-	current.Usage = updateUsageForAppendedRecord(current.Usage, record)
 	current.Version++
 	current.UpdatedAt = now
 	if err := updateSession(ctx, tx, current); err != nil {
