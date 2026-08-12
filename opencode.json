@@ -12,11 +12,11 @@
         "websearch": "allow",
         "external_directory": {
           "*": "ask",
-          "~/**": "allow"
+          "/home/mviswanathsai/**": "allow"
         },
         "edit": {
           "*": "ask",
-          "~/frankenstein/**": "allow"
+          "**": "allow"
         }
       }
     }
