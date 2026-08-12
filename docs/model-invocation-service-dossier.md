@@ -335,7 +335,7 @@ should record this stance revision.
 ## Reconciliation With Existing Contracts
 
 - `ToolCall` and `ToolCatalog` are reused from `tool_invocation.v0`.
-- `TokenCount` is reused from `session.v0.2`.
+- `TokenCount` is reused from `session.v0.3`.
 - `session_id`, `turn_id`, and `request_id` conventions are unchanged.
 - `ModelInput`, the builder's output shape, is defined in the Model Invocation
   contract. This mirrors the `ToolCall` precedent: the consumer contract owns
@@ -350,7 +350,6 @@ should record this stance revision.
 The Runtime Kernel is the next capability to contract, and this dossier
 carries its dossier material. The kernel owns:
 
-- `turn_id` issuance, resolving the tool contract's turn_id debt
 - turn lifecycle and the model-call sequence
 - budgets and global cancellation
 - continue/stop decisions
@@ -440,5 +439,5 @@ contract reconciliation, not changes to the current draft by themselves.
 - Cancellation mechanics, pending a runtime/mediator contract.
 - reasoning_effort and thinking-level control.
 - How rich raw-form repair evidence should be.
-- Whether `session.mutated` should name appended record IDs, or whether the
+- Whether `session.record_written` should name appended record IDs, or whether the
   caller-assigned convention suffices.

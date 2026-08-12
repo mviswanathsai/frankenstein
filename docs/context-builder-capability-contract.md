@@ -401,7 +401,7 @@ This contract reuses:
 
 - `ToolCatalog` from `tool_invocation.v0`
 - `ContextSlot` from `context_provider.v0.1`
-- `SessionRecord` from `session.v0.2`
+- `SessionRecord` from `session.v0.3`
 - `ModelInput`, `ModelMessage`, `ModelMessageRole` from
   `model_invocation.v0`
 
