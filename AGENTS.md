@@ -244,8 +244,8 @@ that cost is intentional.
 - Project status and next steps: `docs/project-status.md`. Update it whenever
   you complete, start, or change a tracked item — a methodology step, a
   contract version, a next step, or a capability area moving into active work.
-- Hermes census: `docs/hermes-architecture-census.md`
-- Contracts: `docs/session-capability-contract.md` (`session.v0.2`),
+- Hermes census: pending — analysis done, file never committed.
+- Contracts: `docs/session-capability-contract.md` (`session.v0.3`),
   `docs/context-provider-capability-contract.md` (`context_provider.v0.1`),
   `docs/tool-invocation-capability-contract.md` (`tool_invocation.v0`)
 - Service dossiers: `docs/session-service-dossier.md`,

@@ -18,9 +18,9 @@ Update this file whenever a tracked item changes:
 The methodology is the pillar-1 build order. See `AGENTS.md` for what each step
 means.
 
-1. Hermes census — first pass complete. See
-   `docs/hermes-architecture-census.md`. Targeted follow-ups remain and are
-   listed there.
+1. Hermes census — first pass complete. The census document is pending —
+   the analysis was done but the file was never committed. Targeted
+   follow-ups remain and are listed here.
 2. Capability clustering — partial. Reasoning lives in the census and the
    drafted dossiers.
 3. Substitution test — partial. The dossiers record contract-worthy judgments.
