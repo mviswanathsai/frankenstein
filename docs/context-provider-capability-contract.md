@@ -1,8 +1,8 @@
 # Context Provider Capability Contract
 
-Date: 2026-07-20
+Date: 2026-08-22
 
-Contract version: `context_provider.v0.1`.
+Contract version: `context_provider.v0.2`.
 
 Status: draft.
 
@@ -15,40 +15,36 @@ Design rationale and Hermes evidence live in
 `docs/context-provider-service-dossier.md`. This document is the capability
 surface.
 
+`context_provider.v0.2` replaces the two-action, layered shape of v0.1 with
+one action and one flat offering. The `initialize` action is gone; the
+`retained`/`per_call` lifetime split and the `referenced` channel are gone.
+Stable context — agent identity, configured instructions, skill indexes, tool
+guidance — is runtime-loaded configuration that flows directly to the context
+builder. The provider owns only dynamic context: material that must be found
+during a session. Placement and retention are builder decisions, not provider
+labels.
+
 ## Purpose
 
-The context provider capability supplies structured context candidates for a
-model input.
+The context provider supplies dynamic context candidates during a session. The
+harness splits context by how it becomes known:
 
-It gives the harness a swappable place to discover and retrieve context such as
-identity, user preferences, project instructions, memory, referenced material,
-skills, workspace facts, and tool guidance. It does not decide the
-final model input layout.
+- what the runtime already knows — agent identity, configured instructions,
+  workspace grants, tool guidance — is loaded at startup and passed directly
+  to the context builder as stable material
+- what must be found during the session — memory recall for the current
+  message, an instruction file discovered in a directory a tool just touched,
+  query-shaped retrieval — is this capability's job
 
-Context provider and context builder are separate capabilities:
+The provider does not decide what the model sees, where it is placed, or how
+long it is retained. It returns candidates with honest accounting of the
+evidence it was given. The context builder owns placement, retention, and
+final materialization.
 
-- the provider returns candidates grouped by semantic role and recommended
-  model-visible lifetime, with optional references to source material
-- the builder decides what the model actually sees, where it is placed, and
-  what is omitted or transformed
-
-The context provider does not own the session's canonical conversation record,
+The provider does not own the session's canonical conversation record,
 long-term ordered storage, or final model input. It may receive a triggering
 record as request evidence, but broader session reads and final input
 materialization remain separate capability operations.
-
-This contract keeps three concepts independent:
-
-```text
-action              initialize | get_context
-reason              why get_context is being called now
-candidate lifetime  retained | per_call
-```
-
-The action defines lifecycle semantics. The reason gives retrieval/ranking
-evidence. The candidate lifetime tells the builder whether accepted output is
-recommended for the ongoing conversation or only the immediate model call; the
-builder owns actual retention duration.
 
 ## Owned State
 
@@ -62,144 +58,44 @@ A context provider may own implementation-private state such as:
 - source freshness metadata
 - tool schemas if it also advertises model-facing tools
 
-The base context-provider actions are observational from the harness point of
-view. Calling `context_provider.initialize` or
-`context_provider.get_context` must not silently commit durable semantic state
-such as new memories, profile facts, session records, or workspace changes.
+The base context-provider action is observational from the harness point of
+view. Calling `context_provider.get_context` must not silently commit durable
+semantic state such as new memories, profile facts, session records, or
+workspace changes.
 
 If a service wants durable writes, model-facing tools, memory observation,
 forget/redact operations, or index rebuild commands, those are separate
 advertised surfaces.
 
-## Candidate Lifetime
+## The Offering
 
-Every context response is split by model-visible lifetime:
+A response carries the candidates the provider currently wants considered,
+with honest accounting of the evidence it was given. This contract takes no
+position on offering granularity: a response may be the provider's complete
+current view, a delta against an earlier response, or only current-turn
+relevance. That choice is provider policy.
 
-```text
-ContextBundle {
-  retained: ContextCollection
-  per_call: ContextCollection
-  failures: string[]
-}
+The contract likewise takes no position on retention. Whether a candidate
+persists in model input across calls, and how its disappearance is expressed,
+is a pairing concern between a provider implementation and a builder
+implementation, not a contract promise. The reference provider documented in
+the service dossier returns its complete current offering and pairs with a
+builder that supersedes on change; a current-only provider pairs with a
+current-only builder. Neither direction is legislated here.
 
-ContextCollection {
-  buckets: ContextBuckets
-  referenced: ContextCandidate[]
-}
+The provider does not label candidates by lifetime or placement. There is no
+contract-level notion of retained, per-call, or mid-session context.
 
-ContextBuckets = map<ContextSlot, ContextCandidate[]>
-```
-
-`retained` means the provider recommends that, if the builder accepts the
-candidate, it become part of the ongoing conversation context rather than only
-the immediate model call. The builder decides how it represents, remembers,
-revalidates, replaces, or evicts accepted and rejected candidates.
-
-`per_call` means context selected for the immediate model call. A single user
-turn can contain several model calls after tool execution, so this contract uses
-`per_call` instead of `per_turn`.
-
-`retained` does not mean system prompt, filesystem-stable, cache-stable,
-durably persisted, or retained for a provider-selected duration. The builder
-may materialize retained context as a cached prefix, model message, side
-channel, reference-only entry, provider-native handle, repeated request
-content, or not at all.
-
-Late-discovered retained context is allowed. For example, an instruction file
-discovered after a tool touches a path may be recommended for the ongoing
-conversation even if it was not available during initialization.
-
-Each response is the provider's complete current offering, not a delta against
-an earlier response. The provider returns every candidate and reference it
-currently considers valuable and classifies each as `retained` or `per_call`.
-A later contract may let the request identify context the builder already holds
-so a provider can avoid repeating it.
-
-## Required Actions
-
-### `context_provider.initialize`
-
-Return the complete initial set of context candidates for a new context
-lifecycle before the first model invocation.
-
-This action has concrete lifecycle semantics. It is called once before the
-first model invocation in a context/session lifecycle, may perform heavier
-discovery, and returns candidates intended to seed the builder's retained
-model-visible context. The provider may also initialize private indexes,
-watches, handles, or caches needed for later retrieval.
-
-Initialization is not represented as a `reason` for `get_context`. Keeping it
-as a separate action prevents custom reasons from becoming implicit lifecycle
-control signals.
-
-Base input payload:
-
-```text
-ContextInitializeRequest {
-  id
-  session_id?
-
-  runtime
-  workspace_roots: WorkspaceRoot[]
-
-  refs?: ContextRef[]
-}
-```
-
-`id` identifies this request. The response and terminal event refer to it as
-`request_id`. If a future mediator envelope ID fully replaces this need, a
-later contract version can remove or deprecate it.
-
-`session_id` is the active session identity when known.
-
-`runtime` contains small runtime facts that are clearly known by the caller.
-The base contract names only facts we have a concrete need for:
-
-```text
-RuntimeFacts {
-  cwd
-  current_date?
-}
-```
-
-`cwd` is the caller-resolved working directory for this invocation. It is the
-single base for relative-path resolution and does not grant or limit filesystem
-access. The provider does not resolve a competing cwd from session metadata or
-another source. `current_date` is the date the runtime wants providers to use
-for time-sensitive context.
-
-`workspace_roots` is the complete filesystem read boundary granted to the
-provider for this invocation. It is required but may be empty; an empty list
-grants no filesystem reads other than what's in the cwd.
-The caller may add or remove roots on later calls.
-
-```text
-WorkspaceRoot {
-  path
-}
-```
-
-`path` is required because it is the boundary the provider must enforce. It
-must be absolute and resolved to a canonical location before access checks so
-relative components and symlinks cannot escape the granted root.
-
-`refs` are pre-resolved references from the frontend, gateway, runtime, session
-record, or another upstream component. The context provider should not be the
-primary parser for raw user text references.
-
-`ContextRef` is the shared type established by `session.v0.3`; this contract
-does not redefine it. A context provider dereferences input refs and returns
-content-bearing candidates derived from them.
-
-Terminal events:
-
-- `context_provider.initialized`
-- `context_provider.context_failed`
+## Required Action
 
 ### `context_provider.get_context`
 
-Return the complete current set of retained and per-call context candidates for
-an established context lifecycle.
+Return dynamic context candidates for the current request.
+
+There is one action, called per turn and whenever the kernel needs fresh
+dynamic context, for example after tool execution. The first call of a
+session is not a distinct action; a caller that wants to signal session start
+may pass `reason: "session_start"` as evidence.
 
 Base input payload:
 
@@ -208,74 +104,35 @@ ContextRequest {
   id
   session_id?
 
-  triggering_record?: SessionRecord
+  transcript?: SessionRecord[]
+  refs?: ContextRef[]
+  touched_paths?: TouchedPath[]
 
   reason?
-  runtime?
+  runtime?: RuntimeFacts
   workspace_roots: WorkspaceRoot[]
-
-  touched_paths?
 }
 ```
 
-`id` has the same identity and correlation semantics as in
-`context_provider.initialize`.
+`id` is required and identifies this request. The response and terminal events
+refer to it as `request_id`.
 
-`session_id` is the active session identity when known.
+`session_id` is the active session identity when known. Correlation only;
+receiving it grants no session record access.
 
-`triggering_record` is the record supplied as evidence for why context is being
-requested now. It may represent a user or assistant message, system material,
-tool-related text, or a system note.
+`transcript` is an optional window of session records supplied as request
+evidence. The caller chooses the window; there is no default full-history
+pass, and the provider must not infer record access from `session_id` alone.
 
-In `context_provider.v0.1`, `triggering_record` uses the `SessionRecord` shape
-established by `session.v0.3` because the required fields currently map one to
-one. This is a provisional interoperability choice, not a required control
-flow. It does not require the runtime to persist the record, invoke the session
-service first, or obtain the value from a session service at all. A runtime,
-gateway, or other caller may supply the value directly. A later contract may
-generalize the type when concrete context-provider needs diverge from the
-session record.
-
-Because `SessionRecord` already contains `refs`, `ContextRequest` does not
-repeat them at the top level. Calls without triggering record evidence may omit
-`triggering_record`.
-
-`reason` is optional metadata that explains why the repeatable context action
-was invoked. It gives the implementation retrieval and ranking context. It is
-evidence, not a command, and providers are not required to branch on it.
-
-Common reasons:
-
-```text
-user_message
-tool_result
-resume
-recovery
-provider_policy
-```
-
-Custom reasons should preferably be namespaced, though namespacing is not
-mandatory in `context_provider.v0.1`:
-
-```text
-company.issue_opened
-obsidian.daily_note_changed
-my_harness.background_followup
-```
-
-Unknown reasons should be accepted and may be treated as generic. Do not use
-`context_initialization` as a reason; initialization is represented by the
-separate `context_provider.initialize` action.
-
-`runtime` has the same meaning as in `context_provider.initialize`.
-
-`workspace_roots` has the same meaning as in
-`context_provider.initialize`. The provider must enforce the roots supplied on
-this request even if an earlier request allowed different roots or private
-caches and indexes contain data from them.
+`refs` are pre-resolved references from the frontend, gateway, runtime,
+session record, or another upstream component. The provider should not be the
+primary parser for raw user text references. `ContextRef` is the shared type
+established by `session.v0.3`; this contract does not redefine it.
 
 `touched_paths` is optional request-time evidence from the runtime or tool
-executor. It is not a canonical session-record field in this contract.
+executor. It is not a canonical session-record field. `TouchedPath` is shared
+vocabulary produced by the tool invocation capability; its definition below
+may relocate to the tool invocation contract when that contract is revised.
 
 ```text
 TouchedPath {
@@ -288,8 +145,43 @@ TouchedPath {
 
 Examples of `source` include `tool_argument`, `tool_result`, and `runtime`.
 Examples of `operation` include `read`, `write`, `list`, `execute`, and
-`unknown`. These values are descriptive strings in `context_provider.v0.1`, not a
-closed enum.
+`unknown`. These are descriptive strings, not a closed enum.
+
+`reason` is optional free-form metadata explaining why the action was invoked.
+It gives the implementation retrieval and ranking context. It is evidence,
+not a command, and providers are not required to branch on it.
+`session_start`, `user_message`, and `tool_result` are useful conventions,
+not a closed enumeration. Unknown reasons must be accepted and may be treated
+as generic.
+
+`runtime` carries small runtime facts that are clearly known by the caller:
+
+```text
+RuntimeFacts {
+  cwd?
+}
+```
+
+`cwd` is the caller-resolved working directory for this invocation. It is the
+single base for relative-path resolution and does not grant or limit
+filesystem access. The provider does not resolve a competing cwd from session
+metadata or another source. No other runtime facts are part of this floor; a
+richer service may advertise more.
+
+`workspace_roots` is the complete filesystem read boundary granted to the
+provider for this invocation. It is required but may be empty; an empty list
+grants no filesystem reads beyond what is reachable under the cwd. The caller
+may add or remove roots on later calls.
+
+```text
+WorkspaceRoot {
+  path
+}
+```
+
+`path` is required because it is the boundary the provider must enforce. It
+must be absolute and resolved to a canonical location before access checks so
+relative components and symlinks cannot escape the granted root.
 
 Terminal events:
 
@@ -301,40 +193,23 @@ Terminal events:
 Successful output payload:
 
 ```text
-ContextBundle {
+ContextOffering {
   request_id
-  provider_id
-  retained: ContextCollection
-  per_call: ContextCollection
+  candidates: ContextCandidate[]
   failures: string[]
 }
 ```
 
-`request_id` references the `id` of the request that produced this bundle.
+`request_id` references the `id` of the request that produced this offering.
 
-`provider_id` identifies the service that produced the bundle. It is required
-for producer attribution, debugging, primary/shadow comparison, and replay.
+`candidates` is a required ordered list and may be empty. Ordering
+communicates the provider's relative preference across the whole list.
 
-`retained` and `per_call` are `ContextCollection` values. Each collection has:
-
-- `buckets`: semantic slot keys mapped to ordered candidate lists
-- `referenced`: ordered content-bearing candidates extracted from explicit refs
-
-Ordering communicates the provider's relative preference within each list.
-A provider may return empty maps and arrays and may omit bucket keys for which
-it has no candidates.
-
-For `context_provider.initialize`, returned candidates are normally in
-`retained`; `per_call` may be empty. The builder can still reject or transform
-initialization candidates. For `context_provider.get_context`, either
-collection may contain buckets or referenced candidates. Both collections
-together are the provider's complete current offering, including retained
-values it returned previously when they remain valuable.
-
-`failures` is a required array of human-readable strings and may be empty. It
-reports input refs the provider did not dereference and why. These entries are
-non-terminal: the provider may still return the rest of the bundle. The v0.1
-contract does not give these entries codes or a richer shape.
+`failures` is a required array of human-readable strings and may be empty.
+Each entry explains one input ref the provider did not dereference and why,
+in input order. Entries are plain text; this contract names no code
+vocabulary for them. They are non-terminal: the provider may still return the
+rest of the offering.
 
 The base response intentionally does not include general-purpose `issues`,
 `warnings`, or `degradations` arrays. A terminal provider failure should use
@@ -344,72 +219,36 @@ Failure output payload:
 
 ```text
 ContextFailure {
-  request_id?
-  provider_id?
+  request_id
   code
   message?
-  retryable?
+  retryable
 }
 ```
 
-## Candidate Slots
+`request_id` is required and echoes the request. `code` is required.
+`retryable` is a required plain boolean; this action is read-style, so a
+service that cannot determine retryability should report `true`.
 
-The shared slot vocabulary describes context roles, not filenames or provider
-internals.
-
-Base slots:
-
-```text
-identity
-user_profile
-project_instructions
-session_fact
-memory
-skills
-tool_guidance
-unknown
-```
-
-The same slot may appear in either layer:
-
-```text
-retained.buckets.memory
-per_call.buckets.memory
-retained.buckets.project_instructions
-retained.buckets.skills
-per_call.buckets.skills
-```
-
-Slots outside the base vocabulary must be namespaced or provider-scoped:
-
-```text
-obsidian.daily_note
-company.runbook
-hermes.skill_context
-```
-
-The `ContextBuckets` map key is authoritative for every candidate in that
-bucket. A provider that relies on a namespaced slot should return enough
-`content` for a generic builder to decide whether to preserve or omit its
-candidates.
+Base failure codes are `invalid_request`, `service_unavailable`, and
+`internal_failure`. A service may return namespaced codes for richer cases.
 
 ## Candidate Shape
 
 ```text
 ContextCandidate {
   id
-
+  metadata?: map[string]any
   content: string
   refs?: ContextRef[]
 }
 ```
 
-`id` is stable enough to identify this candidate in the provider response and
-builder output event. It does not have to be durable across sessions unless the
-provider advertises that behavior.
-
-The containing `ContextBundle.provider_id` identifies the service that produced
-every candidate in the bundle. Candidates do not repeat that identity.
+`id` identifies the candidate in the rendered model input and in events, so
+the model and the record can refer to a candidate without inlining it. It
+should be stable for the same logical candidate across responses within a
+provider lifecycle and unique within a response; it does not have to be
+durable across sessions unless the provider advertises that behavior.
 
 `content` is required, must be non-empty, and is the provider-prepared text it
 wants the builder to consider. It may be exact source text, synthesized text,
@@ -421,24 +260,38 @@ preserve, transform, or omit the content.
 messages, or provider-native sources from which the candidate was produced.
 They identify source material and never substitute for candidate content.
 
-Every explicit input ref must appear in at least one content-bearing
-`ContextCollection.referenced` candidate's `refs` or be identified in
-`ContextBundle.failures`. A provider must not silently drop an input ref or
-return a candidate whose refs substitute for content.
+The candidate shape intentionally does not include named priority, token
+budget, latency budget, phase, lifetime, or placement fields. List ordering is
+the provider's preference; ranking, budget, and final placement belong to the
+context builder.
 
-The candidate shape intentionally does not include priority, token budget,
-latency budget, phase, or placement fields. Ranking, budget, and final placement
-belong to the context builder in `context_provider.v0`.
+`metadata` is an optional advisory map of string keys to plain string or
+structured JSON values. It is the per-implementation extension seam: a
+provider may attach hints it believes
+a builder could use — for example, a role convention the reference provider
+emits so builders can section rendered output. Metadata is non-normative. No
+guarantee in this contract depends on the presence or value of any key, and a
+conforming builder may ignore metadata entirely. There is no closed key
+vocabulary here; conventions the reference provider emits are documented in
+the service dossier. A key that earns cross-implementation meaning may be
+promoted to a named field in a later contract version.
+
+## Accounting
+
+Every explicit input ref must appear among some candidate's `refs` or be
+identified in `failures`. A provider must not silently drop an input ref or
+return a candidate whose refs substitute for content.
 
 ## Side Effects
 
-`context_provider.initialize` and `context_provider.get_context` may:
+`context_provider.get_context` may:
 
 - read allowed sources
 - query memory/search backends
 - refresh local caches
 - refresh indexes or watches needed for retrieval
 - return candidates or failure
+- watch context files
 
 It must not silently:
 
@@ -455,19 +308,19 @@ Those behaviors belong in other capability contracts.
 
 The provider must not read a filesystem path outside the current request's
 `workspace_roots` merely because that path is the `runtime.cwd`, appears in
-`triggering_record.refs` or `touched_paths`, was allowed by an earlier request,
-or exists in a provider cache or index.
+`transcript` record refs or `touched_paths`, was allowed by an earlier
+request, or exists in a provider cache or index.
 
-In `context_provider.v0.1`, `workspace_roots` is the complete filesystem read
+In `context_provider.v0.2`, `workspace_roots` is the complete filesystem read
 policy visible to the provider. Richer grants, denied scopes, source-specific
 permissions, and mediator-controlled reads may replace it in a later contract.
 If the provider cannot safely resolve or read a source within the current
-boundary, it should omit the candidate or fail explicitly rather than bypassing
-the boundary.
+boundary, it should omit the candidate or fail explicitly rather than
+bypassing the boundary.
 
 Source text may be adversarial. Candidate `refs` identify source material when
-that information is available, but the builder remains responsible for deciding
-how to treat and place candidate content.
+that information is available, but the builder remains responsible for
+deciding how to treat and place candidate content.
 
 ## Failure Semantics
 
@@ -475,7 +328,6 @@ Expected failure categories:
 
 - provider unavailable
 - request outside allowed scope
-- conversation record access denied
 - source file missing
 - referenced content changed or cannot be validated
 - index unavailable
@@ -485,18 +337,18 @@ Expected failure categories:
 - unsafe source content
 - provider-specific memory/search failure
 
-Failure should be explicit and degradable. A provider may return empty bucket
-maps when it has nothing useful. A provider may omit an unusable candidate
-without failing an otherwise useful bundle.
+Failure should be explicit and degradable. A provider may return an empty
+candidate list when it has nothing useful. A provider may omit an unusable
+candidate without failing an otherwise useful offering.
 
 Failure to dereference an individual input ref should normally be reported in
-`ContextBundle.failures`. It does not require the terminal
-`context_provider.context_failed` event.
+`failures`. It does not require the terminal `context_provider.context_failed`
+event.
 
 A provider must not return known stale content as usable context. It should
-either revalidate the source, return a fresh candidate, report the unread ref in
-`ContextBundle.failures`, or omit a candidate that was not derived from an
-explicit input ref.
+either revalidate the source, return a fresh candidate, report the unread ref
+in `failures`, or omit a candidate that was not derived from an explicit
+input ref.
 
 A provider must not fabricate context to hide retrieval failure.
 
@@ -510,132 +362,99 @@ The base request should not include the full conversation record by default.
 Reasons:
 
 - conversation history size grows without bound
-- many providers only need the triggering record, its refs, touched paths, or
+- many providers only need the current message, its refs, touched paths, or
   runtime facts
 - full-history access is a policy and privacy decision
 - the session capability owns canonical conversation-record reads
 
 When broader history or active continuation state is needed, the provider must
-request `session.get` through the mediator if it has
-that advertised access. Merely receiving a `session_id` does not grant session
-record access.
-
-## Memory Interaction
-
-Memory can interact with this contract in three ways:
-
-1. Memory as context provider:
-
-```text
-initialize(...) -> retained.buckets.memory
-get_context(reason=user_message) -> retained.buckets.memory,
-                                    per_call.buckets.memory
-```
-
-2. Memory as model-facing tool provider:
-
-```text
-publish tools such as memory_search, memory_save, memory_forget
-handle model tool calls through the tool router/executor
-return normal tool-result payloads
-```
-
-3. Memory as observer/write sink:
-
-```text
-observe completed turns
-extract durable facts
-sync to backend
-mirror explicit memory writes
-```
-
-The base context-provider contract only requires the first behavior. Durable
-memory writes and model-facing tools are separate advertised surfaces.
+request `session.get` through the mediator if it has that advertised access.
+Merely receiving a `session_id` does not grant session record access.
 
 ## Skills Interaction
 
-Skills are part of the context vocabulary.
-
-Examples:
-
-- `retained.buckets.skills`: compact skill index or always-on skill guidance
-- `per_call.buckets.skills`: loaded skill body, selected references, or
-  skill-specific instructions needed for the immediate call
-
-The provider may know how to discover installed skills, rank applicable skills,
-load skill files, or return skill references. The builder decides where and how
-to materialize those candidates.
+Skills are part of the context vocabulary. A dynamic skills candidate may
+carry a loaded skill body, a selected reference, or skill guidance needed for
+the current message, in the candidate list. Stable skill indexes are
+runtime-loaded configuration passed to the builder directly, not provider
+output.
 
 ## Builder Interaction
 
-Provider events say what context was available. Builder events say what the
-model actually saw.
+Provider events say what dynamic context was available. Builder events say
+what the model actually saw. The builder owns delivery, retention, and
+omission; the provider must not depend on every returned candidate being
+included in the final model input.
 
-Example builder event:
-
-```text
-context.built {
-  retained_included[]
-  per_call_included[]
-  omitted[]
-  truncated[]
-  rendered_messages_or_parts_ref
-  cache_partitioning
-}
-```
-
-The context provider must not depend on every returned candidate being included
-in the final model input.
+A provider's offering granularity and a builder's delivery policy are a
+pairing choice, not a contract coupling. Providers and builders are composed
+by the runtime and evaluated as pairs; a provider that assumes persistence
+across calls pairs only with a builder that provides it.
 
 ## Concurrency And Idempotency
 
-`context_provider.initialize` and `context_provider.get_context` are read-style
-and should be safe to retry.
+`context_provider.get_context` is read-style and should be safe to retry.
 
 The request `id` is an identity and correlation value, not a durable write
-idempotency key. `ContextBundle.request_id` and `ContextFailure.request_id`
-refer back to it.
-Repeated equivalent requests may produce different candidates if underlying
-sources changed. The contract does not require candidates to explain why their
-content differs between requests.
+idempotency key. `ContextOffering.request_id` and
+`ContextFailure.request_id` refer back to it. Repeated equivalent requests
+may produce different candidates if underlying sources changed. The contract
+does not require candidates to explain why their content differs between
+requests.
 
-If a provider maintains caches or indexes, concurrent requests must not corrupt
-provider state or return internally inconsistent candidate payloads.
+If a provider maintains caches or indexes, concurrent requests must not
+corrupt provider state or return internally inconsistent candidate payloads.
+
+## Extension Surface
+
+This contract is the floor. A generic builder relies only on the fields named
+here. A richer provider may advertise additional actions, additional
+candidate fields, candidate-level hints in `metadata`, or negotiated shapes
+with a compatible builder; those ride on top of this surface and must not
+change the meaning of the floor fields. A later version may add a
+contribution seam for plugins; nothing here precludes it.
+
+## Open Questions
+
+- Whether `workspace_roots` enforcement belongs to the provider (current
+  stance) or to the mediator/runtime, with roots as caller-granted evidence.
+  Under discussion.
+- Whether `TouchedPath` relocates to the tool invocation contract or a shared
+  types document, since tool invocation is its producer.
+- Whether emitted snapshots should become durable transcript records. This
+  question follows the reference builder's delivery policy and has relocated
+  to the context-builder dossier.
 
 ## Minimal Test Fixtures
 
 A service implementing the base context-provider contract should be testable
 with:
 
-- return empty `retained` and `per_call` collections for a valid request with no
-  applicable context
-- return `retained.buckets.project_instructions` from
-  `context_provider.initialize` for a known project instruction source with
-  a file `ContextRef`
-- return late-discovered `retained.buckets.project_instructions` from
-  `context_provider.get_context(reason=tool_result)` when touched paths reveal
-  a relevant instruction source
-- return the complete current offering from `context_provider.get_context`, not
-  only candidates added since an earlier response
-- return `per_call.buckets.memory` for a query-shaped triggering record
-- return content-bearing candidates derived from pre-resolved
-  `triggering_record.refs` without requiring raw text parsing
-- account for every explicit input ref through a referenced candidate or a
-  string in `ContextBundle.failures`
-- return an otherwise successful bundle when one input ref cannot be
+- return an empty candidate list and empty failures for a valid request with
+  no applicable context
+- return candidates ordered by the provider's relative preference
+- return memory candidates for a query-shaped triggering record
+- return project-instruction candidates when touched paths reveal a relevant
+  instruction source
+- return content-bearing candidates derived from pre-resolved request refs
+  without requiring raw text parsing
+- account for every explicit input ref through a candidate's `refs` or an
+  entry in `failures`, in input order
+- return an otherwise successful offering when one input ref cannot be
   dereferenced
-- preserve `ContextRequest.id` as `ContextBundle.request_id`
-- include `provider_id` in every successful bundle
-- require non-empty `content` on every candidate and treat candidate `refs` only
-  as source links
-- avoid conversation-record access beyond `triggering_record` unless the
-  provider is authorized to invoke `session.get`
+- preserve `ContextRequest.id` as `ContextOffering.request_id` and in the
+  failure payload
+- require non-empty `content` on every candidate and treat candidate `refs`
+  only as source links
+- accept optional candidate `metadata` with no floor behavior depending on
+  any key
+- keep candidate ids stable across responses within a provider lifecycle and
+  unique within a single response
 - accept an optional `session_id`
 - accept unknown `reason` values and treat them as retrieval evidence, not
   lifecycle commands
-- accept optional `runtime.cwd` and `runtime.current_date`
-- require `workspace_roots` on both actions and accept an empty list as no
-  filesystem access
+- accept optional `runtime.cwd`
+- require `workspace_roots` and accept an empty list as no filesystem access
 - resolve relative paths from `runtime.cwd` without treating cwd as permission
 - reject or omit filesystem reads outside the current request's
   `workspace_roots`
@@ -644,5 +463,4 @@ with:
 - accept optional `touched_paths` as request-time evidence without requiring
   session persistence
 - avoid returning known stale source content as usable context
-- avoid committing durable memory or session writes during `initialize` or
-  `get_context`
+- avoid committing durable memory or session writes during `get_context`

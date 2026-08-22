@@ -1,8 +1,8 @@
 # Context Provider Service Contract Draft
 
-Date: 2026-07-18
+Date: 2026-08-22
 
-Contract version: `context_provider.v0`.
+Contract version: `context_provider.v0.2`.
 
 Status: draft.
 
@@ -12,6 +12,9 @@ This document replaces the earlier single-action context-provider dossier with a
 contract-shaped draft. It is still not a final API specification. The goal is to
 capture the boundary decisions from the Hermes census and the design discussion
 before implementation hardens them accidentally.
+
+The body below predates the v0.2 retrospective; the Discussion Records at the
+bottom carry the current direction. The contract is the surface of record.
 
 The important naming decision remains: `context provider` is the umbrella.
 Memory backends, project-context loaders, identity/profile systems, repo-aware
@@ -538,3 +541,104 @@ future cached prefix, or nothing, depending on policy and timing.
 - How should source-owned rendered text interact with builder-owned templates?
 - Should request-level permission/read policy become part of this contract, or
   stay fully owned by the mediator/runtime?
+- Should emitted snapshots become durable transcript records? Relocated from
+  the provider contract; it is a question about the reference builder's
+  delivery policy and belongs to the builder dossier.
+
+## Discussion Record: v0.2 Retrospective (2026-08-20)
+
+The v0.1 shape was revisited after the runtime-kernel build and research into
+deepseek-harness, Pi, DGM, and Hermes (`docs/research/deepseek-harness-context-flow.md`,
+`docs/research/reference-harness-context-flow.md`). Decisions, in order of
+consequence:
+
+- **Accepted — stable context moves to the builder.** The harness splits
+  context by how it becomes known: what the runtime already knows (agent
+  identity, configured instructions, skill indexes, tool guidance) is loaded
+  at startup and passed directly to the context builder; what must be found
+  during a session (memory recall, mid-session discoveries) is the provider's
+  job. Identity stops being a discovered file. The provider contract no
+  longer carries an `agent` field; the known-vs-found split is the
+  multi-agent accommodation.
+- **Accepted, then revised — dynamic context is delivered by diff-gated snapshots, not
+  placement decisions.** No retained/per_call, no promotion, no mid-session
+  notion. The provider's complete offering is the state: the builder renders
+  each offering to a snapshot message and appends it to the model input only
+  when the rendered text changed, with supersede text; an emptied offering
+  appends a cleared marker. Whatever the provider keeps offering keeps being
+  delivered; whatever stops appearing disappears with the next snapshot. The
+  prefix changes only on deliberate reassembly. This is deepseek-harness's
+  `PromptContext` mechanism (content diff, append-only, re-projection after
+  compaction), found in `docs/research/deepseek-harness-context-flow.md` and
+  verified against `packages/core/agent-loop/src/runtime-context.ts`.
+  Revised 2026-08-22: the delivery mechanics are builder implementation
+  policy, not contract; the contract keeps prefix stability and honest
+  delivery events. See the follow-up record below.
+- **Rejected — N-turn stabilization and promotion.** An earlier direction had
+  the builder observe candidates across offers and promote after N stable
+  turns. Rejected: duration-based promotion is a heuristic that predicts
+  future stability from past presence, causing prefix invalidations on random
+  schedules and an oscillation failure mode. Exact text-diff gating makes
+  cache behavior deterministic instead.
+- **Accepted — one action.** `initialize` is gone. The first call of a
+  session may carry `reason: "session_start"` as evidence.
+- **Accepted — the floor principle.** The contract pins the shapes its
+  invariants reference and the next capability consumes; taxonomy and
+  enrichment are extensions. This killed the `retained`/`per_call` layers,
+  the `referenced` channel, the reason taxonomy, `current_date`, and the
+  failure-code vocabulary in payload strings.
+- **Accepted, then revised — bucket shape.** `ContextBuckets =
+  map<slot, candidates[]>` was the response shape, chosen for per-role
+  grouping and per-role preference ordering. Revised 2026-08-22: after the
+  delivery collapse, slots gated no floor behavior, so the offering is now a
+  flat ordered candidate list and per-implementation hints move to an
+  advisory candidate `metadata` map. See the follow-up record below.
+- **Accepted — cross-contract failure shape.** `{request_id, code, message?,
+  retryable}` with required plain `retryable` (read-style: unknown means
+  retryable), matching tool invocation. `request_id` is required on all
+  terminal payloads in the direct-call mediator world.
+- **Deferred — plugin contribution seam.** "Whatever can be done with
+  plugins should be done with plugins" is the direction; the contribution
+  seam arrives in a later pass and nothing in v0.2 precludes it.
+- **Open — workspace_roots enforcement ownership.** Provider-enforced (v0.1
+  stance, kept in v0.2) versus mediator-granted evidence. Tied to the
+  runtime-kernel contract's mediation responsibilities and the model-reads-via-tools
+  angle (the model's read grants are tool invocation's business).
+- **Open — TouchedPath ownership.** Produced by tool invocation; defined
+  here for now, relocation candidate.
+- **Open — the loop's seams.** The kernel will need typed extension points
+  (step admission, request-config override, tool approval gate) — named in
+  discussion, owned by the runtime-kernel contract, not this one.
+
+## Discussion Record: Flat Offering And Pairing Policy (2026-08-22)
+
+Follow-up to the v0.2 retrospective. Two accepted decisions were reversed
+after contract reading showed them coupling one service's implementation
+policy to the other's obligations:
+
+- **Accepted — flat offering with advisory metadata.** `ContextBuckets =
+  map<slot, candidates[]>` becomes an ordered `candidates` list on
+  `ContextOffering`. Slots gated no floor behavior once dynamic delivery
+  collapsed to one rendered block, so the map was structure without
+  semantics. Extension rides on `candidate.metadata`, an optional advisory
+  map: non-normative, no contract guarantee depends on any key, and a
+  conforming builder may ignore it entirely. Keys that earn
+  cross-implementation meaning may be promoted to named fields in a later
+  version.
+- **Accepted — no retention-direction sentences.** The contract takes no
+  position on offering granularity (complete view, delta, current-only) and
+  no position on whether candidates persist across calls. Both are pairing
+  policy between provider and builder implementations. The reference
+  provider returns its complete current offering; the reference builder's
+  delivery policy (diff-gated superseding snapshots) moves to the builder
+  dossier. What stays contractual on the builder side: dynamic delivery
+  never mutates the prefix, and delivery events record what was included
+  and omitted.
+- **Tentative — slot names as metadata conventions.** The base slot names
+  (`identity`, `user_profile`, `project_instructions`, `session_fact`,
+  `memory`, `skills`, `tool_guidance`, `unknown`) survive as conventions the
+  reference provider may emit, e.g. `metadata.slot = "memory"`, so builders
+  can section rendered output. The builder pass may refine this.
+- **Relocated — snapshot durability.** Whether emitted snapshots become
+  durable transcript records is a question about the reference builder's
+  delivery policy; it moves to the builder dossier.
