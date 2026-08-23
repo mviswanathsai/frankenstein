@@ -179,18 +179,18 @@ func (f *fakeBuilder) Prepare(req contextbuilder.PrepareRequest) (contextbuilder
 }
 
 type fakeContextProvider struct {
-	initBundle  *contextprovider.ContextBundle
-	initFailure *contextprovider.ContextFailure
-	getBundle   *contextprovider.ContextBundle
-	getFailure  *contextprovider.ContextFailure
+	stableResponse  *contextprovider.ContextResponse
+	stableFailure   *contextprovider.ContextFailure
+	dynamicResponse *contextprovider.ContextResponse
+	dynamicFailure  *contextprovider.ContextFailure
 }
 
-func (f *fakeContextProvider) Initialize(ctx context.Context, req contextprovider.ContextInitializeRequest) (*contextprovider.ContextBundle, *contextprovider.ContextFailure) {
-	return f.initBundle, f.initFailure
+func (f *fakeContextProvider) GetStableContext(ctx context.Context, req contextprovider.StableContextRequest) (*contextprovider.ContextResponse, *contextprovider.ContextFailure) {
+	return f.stableResponse, f.stableFailure
 }
 
-func (f *fakeContextProvider) GetContext(ctx context.Context, req contextprovider.ContextRequest) (*contextprovider.ContextBundle, *contextprovider.ContextFailure) {
-	return f.getBundle, f.getFailure
+func (f *fakeContextProvider) GetDynamicContext(ctx context.Context, req contextprovider.DynamicContextRequest) (*contextprovider.ContextResponse, *contextprovider.ContextFailure) {
+	return f.dynamicResponse, f.dynamicFailure
 }
 
 // noopObserver is a TurnObserver that records what it sees.
@@ -353,7 +353,8 @@ func TestNewSession(t *testing.T) {
 	k, fs, ft, fm, fb, fc := newTestKernel()
 	fs.created = newTestSession("sess1")
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
-	fc.initBundle = &contextprovider.ContextBundle{}
+	fc.stableResponse = &contextprovider.ContextResponse{}
+	fc.dynamicResponse = &contextprovider.ContextResponse{}
 	fm.result = completeTurnResult("hello from model")
 	fb.assemblePrefix = contextbuilder.BuiltPrefix{
 		SystemPrompt:   "you are helpful",
@@ -385,13 +386,16 @@ func TestNewSession(t *testing.T) {
 		t.Errorf("model content = %s, want hello from model", obs.contents[0])
 	}
 
-	// Prefix should be cached in session metadata.
+	// Prefix and frozen stable context should be cached in session metadata.
 	cached, ok := loadBuiltPrefix(fs.created)
 	if !ok {
 		t.Fatal("built prefix should be cached")
 	}
 	if cached.SystemPromptID != "abc123" {
 		t.Errorf("cached SystemPromptID = %s, want abc123", cached.SystemPromptID)
+	}
+	if _, ok := loadStableContext(fs.created); !ok {
+		t.Fatal("stable context should be frozen into session metadata")
 	}
 
 	// Final assistant message should be written through WriteMessage.
@@ -456,7 +460,7 @@ func TestContinueReusesPrefix(t *testing.T) {
 	sess.Metadata.Custom[builtPrefixKey] = raw
 	fs.created = sess
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
-	fc.getBundle = &contextprovider.ContextBundle{}
+	fc.dynamicResponse = &contextprovider.ContextResponse{}
 	fm.result = completeTurnResult("continued response")
 	fb.prepareCtx = contextbuilder.BuiltContext{
 		Input: modelinvocation.ModelInput{
@@ -500,7 +504,8 @@ func TestToolStopRequestedExits(t *testing.T) {
 	k, fs, ft, fm, fb, fc := newTestKernel()
 	fs.created = newTestSession("sess1")
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
-	fc.initBundle = &contextprovider.ContextBundle{}
+	fc.stableResponse = &contextprovider.ContextResponse{}
+	fc.dynamicResponse = &contextprovider.ContextResponse{}
 	fb.assemblePrefix = contextbuilder.BuiltPrefix{SystemPrompt: "prompt", SystemPromptID: "p1"}
 	fb.prepareCtx = contextbuilder.BuiltContext{
 		Input: modelinvocation.ModelInput{System: "prompt", Messages: []modelinvocation.ModelMessage{}},
@@ -541,7 +546,8 @@ func TestModelErrorExit(t *testing.T) {
 	k, fs, ft, fm, fb, fc := newTestKernel()
 	fs.created = newTestSession("sess1")
 	// No catalog or context needed since model fails immediately.
-	fc.initBundle = &contextprovider.ContextBundle{}
+	fc.stableResponse = &contextprovider.ContextResponse{}
+	fc.dynamicResponse = &contextprovider.ContextResponse{}
 	fb.assemblePrefix = contextbuilder.BuiltPrefix{SystemPrompt: "prompt", SystemPromptID: "p1"}
 	fb.prepareCtx = contextbuilder.BuiltContext{
 		Input: modelinvocation.ModelInput{System: "prompt", Messages: []modelinvocation.ModelMessage{}},
@@ -570,7 +576,8 @@ func TestTurnBudgetExhausted(t *testing.T) {
 	k.cfg.TurnBudget = 2 // small budget
 	fs.created = newTestSession("sess1")
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
-	fc.initBundle = &contextprovider.ContextBundle{}
+	fc.stableResponse = &contextprovider.ContextResponse{}
+	fc.dynamicResponse = &contextprovider.ContextResponse{}
 	fb.assemblePrefix = contextbuilder.BuiltPrefix{SystemPrompt: "prompt", SystemPromptID: "p1"}
 	fb.prepareCtx = contextbuilder.BuiltContext{
 		Input: modelinvocation.ModelInput{System: "prompt", Messages: []modelinvocation.ModelMessage{}},

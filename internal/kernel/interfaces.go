@@ -52,7 +52,8 @@ type SessionStore interface {
 }
 
 // ContextBuilder is the kernel's outbound surface to the Context Builder
-// capability. The kernel calls assemble and prepare; estimate is a
+// capability. The kernel calls assemble (with the frozen stable candidates)
+// and prepare (with per-turn dynamic responses); estimate is a
 // builder-owned surface the v0 kernel does not call.
 type ContextBuilder interface {
 	Assemble(req contextbuilder.AssembleRequest) (contextbuilder.BuiltPrefix, error)
@@ -60,8 +61,10 @@ type ContextBuilder interface {
 }
 
 // ContextProvider is the kernel's outbound surface to the Context Provider
-// capability. Exactly one of bundle or failure is non-nil.
+// capability. GetStableContext runs once per session and its response is
+// frozen into session metadata; GetDynamicContext runs per turn. Exactly one
+// of response or failure is non-nil.
 type ContextProvider interface {
-	Initialize(ctx context.Context, req contextprovider.ContextInitializeRequest) (*contextprovider.ContextBundle, *contextprovider.ContextFailure)
-	GetContext(ctx context.Context, req contextprovider.ContextRequest) (*contextprovider.ContextBundle, *contextprovider.ContextFailure)
+	GetDynamicContext(ctx context.Context, req contextprovider.DynamicContextRequest) (*contextprovider.ContextResponse, *contextprovider.ContextFailure)
+	GetStableContext(ctx context.Context, req contextprovider.StableContextRequest) (*contextprovider.ContextResponse, *contextprovider.ContextFailure)
 }

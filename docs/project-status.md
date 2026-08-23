@@ -79,12 +79,13 @@ Work in this order. Move each item forward as it lands.
    is superseded by `context_renderer.v0.3`: one `render` action, a
    session-scoped `config` slot, `ContextResponse` dynamic input. All design
    decisions and pairing policy are recorded in
-   `docs/context-renderer-service-dossier.md`. Implementation order: first the
-   context provider v0.2 Go update (flat `ContextResponse`, the new
-   `get_stable_context` action, `metadata.slot` conventions), then the
-   renderer rework (package `internal/contextrenderer`, single `Render`,
-   kernel builds config once per session and holds it, `built_prefix` cache
-   removed, no per-turn catalog fetch).
+   `docs/context-renderer-service-dossier.md`. The context provider v0.2 Go
+   update is in progress: the flat `ContextResponse` shape, the new
+   `get_stable_context` action, `metadata.slot` conventions, the stable-set
+   partition, and the `touchedpath` micro-package are being implemented. The
+   renderer rework still follows (package `internal/contextrenderer`, single
+   `Render`, kernel builds config once per session and holds it,
+   `built_prefix` cache removed, no per-turn catalog fetch).
 4. Draft the runtime-kernel contract — the coherence point the other contracts
    reach into: turn lifecycle, ordering, budgets, cancellation, recovery, and
    replay invariants. The runtime kernel is the next capability in active

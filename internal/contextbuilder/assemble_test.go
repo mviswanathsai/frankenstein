@@ -13,37 +13,15 @@ import (
 // hex16 matches a 16-character lowercase hex string.
 var hex16 = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
-// sampleBundles returns two bundles whose retained context exercises slot
-// merging across bundles: identity arrives only from the second bundle, while
+// sampleCandidates returns stable candidates whose slot metadata exercises
+// grouping: identity arrives only from the second candidate, while
 // project_instructions arrives from both.
-func sampleBundles() []contextprovider.ContextBundle {
-	return []contextprovider.ContextBundle{
-		{
-			RequestID:  "bundle-1",
-			ProviderID: "provider-1",
-			Retained: contextprovider.ContextCollection{
-				Buckets: contextprovider.ContextBuckets{
-					contextprovider.SlotProjectInstructions: {
-						{ID: "pi-1", Content: "Follow the contract."},
-					},
-				},
-			},
-		},
-		{
-			RequestID:  "bundle-2",
-			ProviderID: "provider-2",
-			Retained: contextprovider.ContextCollection{
-				Buckets: contextprovider.ContextBuckets{
-					contextprovider.SlotIdentity: {
-						{ID: "id-1", Content: "You are Frank."},
-						{ID: "id-2", Content: "You are calm."},
-					},
-					contextprovider.SlotProjectInstructions: {
-						{ID: "pi-2", Content: "Write plain prose."},
-					},
-				},
-			},
-		},
+func sampleCandidates() []contextprovider.ContextCandidate {
+	return []contextprovider.ContextCandidate{
+		{ID: "pi-1", Metadata: slotMeta(contextprovider.SlotProjectInstructions), Content: "Follow the contract."},
+		{ID: "id-1", Metadata: slotMeta(contextprovider.SlotIdentity), Content: "You are Frank."},
+		{ID: "id-2", Metadata: slotMeta(contextprovider.SlotIdentity), Content: "You are calm."},
+		{ID: "pi-2", Metadata: slotMeta(contextprovider.SlotProjectInstructions), Content: "Write plain prose."},
 	}
 }
 
@@ -76,11 +54,11 @@ func TestAssemble(t *testing.T) {
 		}
 	})
 
-	t.Run("retained context renders in deterministic XML blocks", func(t *testing.T) {
+	t.Run("stable candidates render in deterministic XML blocks", func(t *testing.T) {
 		got, err := service.Assemble(AssembleRequest{
-			ID:             "req-context",
-			Model:          "claude-sonnet-4",
-			ContextBundles: sampleBundles(),
+			ID:               "req-context",
+			Model:            "claude-sonnet-4",
+			StableCandidates: sampleCandidates(),
 		})
 		if err != nil {
 			t.Fatalf("Assemble() error = %v, want nil", err)
@@ -128,10 +106,10 @@ func TestAssemble(t *testing.T) {
 
 	t.Run("byte stability", func(t *testing.T) {
 		req := AssembleRequest{
-			ID:             "req-stable",
-			Model:          "claude-sonnet-4",
-			ContextBundles: sampleBundles(),
-			Catalog:        sampleCatalog(),
+			ID:               "req-stable",
+			Model:            "claude-sonnet-4",
+			StableCandidates: sampleCandidates(),
+			Catalog:          sampleCatalog(),
 		}
 		first, err := service.Assemble(req)
 		if err != nil {
@@ -148,9 +126,9 @@ func TestAssemble(t *testing.T) {
 
 	t.Run("system_prompt_id is a 16-character hex hash of the prompt", func(t *testing.T) {
 		req := AssembleRequest{
-			ID:             "req-id",
-			Model:          "claude-sonnet-4",
-			ContextBundles: sampleBundles(),
+			ID:               "req-id",
+			Model:            "claude-sonnet-4",
+			StableCandidates: sampleCandidates(),
 		}
 		got, err := service.Assemble(req)
 		if err != nil {
@@ -161,16 +139,10 @@ func TestAssemble(t *testing.T) {
 		}
 
 		changed := req
-		changed.ContextBundles = append(changed.ContextBundles, contextprovider.ContextBundle{
-			RequestID:  "bundle-3",
-			ProviderID: "provider-3",
-			Retained: contextprovider.ContextCollection{
-				Buckets: contextprovider.ContextBuckets{
-					contextprovider.SlotMemory: {
-						{ID: "mem-1", Content: "Remember the plan."},
-					},
-				},
-			},
+		changed.StableCandidates = append(changed.StableCandidates, contextprovider.ContextCandidate{
+			ID:       "mem-1",
+			Metadata: slotMeta(contextprovider.SlotMemory),
+			Content:  "Remember the plan.",
 		})
 		other, err := service.Assemble(changed)
 		if err != nil {

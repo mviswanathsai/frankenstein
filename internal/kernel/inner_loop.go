@@ -38,7 +38,7 @@ func runInnerLoop(
 	prefix contextbuilder.BuiltPrefix,
 	transcript []session.SessionRecord,
 	activeCatalog *toolinvocation.ToolCatalog,
-	bundles []contextprovider.ContextBundle,
+	dynamic []contextprovider.ContextResponse,
 ) innerLoopResult {
 	var newRecords []session.SessionRecord
 
@@ -46,14 +46,14 @@ func runInnerLoop(
 		iterStr := strconv.Itoa(iter)
 
 		// Prepare the model input from the prefix, the current transcript,
-		// and any per-turn context bundles.
+		// and any dynamic context responses.
 		builtCtx, err := builder.Prepare(contextbuilder.PrepareRequest{
-			ID:             "prep_" + turnID + "_" + iterStr,
-			SessionID:      sessionID,
-			TurnID:         turnID,
-			Prefix:         prefix,
-			Transcript:     transcript,
-			ContextBundles: bundles,
+			ID:         "prep_" + turnID + "_" + iterStr,
+			SessionID:  sessionID,
+			TurnID:     turnID,
+			Prefix:     prefix,
+			Transcript: transcript,
+			Dynamic:    dynamic,
 		})
 		if err != nil {
 			return innerLoopResult{exitReason: ExitInternalError, newRecords: newRecords}

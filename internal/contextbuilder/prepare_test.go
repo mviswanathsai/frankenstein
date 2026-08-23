@@ -36,6 +36,12 @@ func assistantText(s string) session.SessionRecord {
 
 func pref(p string) BuiltPrefix { return BuiltPrefix{SystemPrompt: p} }
 
+// slotMeta builds the advisory candidate metadata map carrying a slot
+// convention value under contextprovider.MetadataKeySlot.
+func slotMeta(slot string) map[string]any {
+	return map[string]any{contextprovider.MetadataKeySlot: slot}
+}
+
 func TestPrepare(t *testing.T) {
 	// A tool call exercising every mapped field, in both local and canonical
 	// shapes.
@@ -58,7 +64,7 @@ func TestPrepare(t *testing.T) {
 		name       string
 		prefix     BuiltPrefix
 		transcript []session.SessionRecord
-		bundles    []contextprovider.ContextBundle
+		dynamic    []contextprovider.ContextResponse
 		wantErr    string // expected failure message; empty means success
 		wantMsgs   []modelinvocation.ModelMessage
 		wantNotes  []NormalizationNote
@@ -92,8 +98,8 @@ func TestPrepare(t *testing.T) {
 			wantNotes:  []NormalizationNote{{TranscriptIndex: 0, Action: ActionDropped, Reason: ReasonEmptyTurn}},
 		},
 		{
-			name:       "assistant message carries tool calls",
-			prefix:     pref("p"),
+			name:   "assistant message carries tool calls",
+			prefix: pref("p"),
 			transcript: []session.SessionRecord{
 				rec(session.RecordMessage, string(modelinvocation.RoleAssistant), strPtr("checking"), "", []session.ToolCall{{ID: "call-1", Name: "ls"}}),
 				rec(session.RecordMessage, string(modelinvocation.RoleTool), strPtr("out"), "call-1", nil),
@@ -105,8 +111,8 @@ func TestPrepare(t *testing.T) {
 			wantNotes: []NormalizationNote{},
 		},
 		{
-			name:       "tool call record",
-			prefix:     pref("p"),
+			name:   "tool call record",
+			prefix: pref("p"),
 			transcript: []session.SessionRecord{
 				rec(session.RecordToolCall, "", nil, "", []session.ToolCall{toolCall1}),
 				rec(session.RecordToolResult, "", strPtr("file contents"), "call-1", nil),
@@ -118,8 +124,8 @@ func TestPrepare(t *testing.T) {
 			wantNotes: []NormalizationNote{},
 		},
 		{
-			name:       "tool call record carries text",
-			prefix:     pref("p"),
+			name:   "tool call record carries text",
+			prefix: pref("p"),
 			transcript: []session.SessionRecord{
 				rec(session.RecordToolCall, "", strPtr("let me check"), "", []session.ToolCall{{ID: "call-1", Name: "read_file"}}),
 				rec(session.RecordToolResult, "", strPtr("contents"), "call-1", nil),
@@ -131,8 +137,8 @@ func TestPrepare(t *testing.T) {
 			wantNotes: []NormalizationNote{},
 		},
 		{
-			name:       "tool result record",
-			prefix:     pref("p"),
+			name:   "tool result record",
+			prefix: pref("p"),
 			transcript: []session.SessionRecord{
 				rec(session.RecordToolCall, "", nil, "", []session.ToolCall{{ID: "call-1", Name: "ls"}}),
 				rec(session.RecordToolResult, "", strPtr("out"), "call-1", nil),
@@ -151,8 +157,8 @@ func TestPrepare(t *testing.T) {
 			wantNotes:  []NormalizationNote{{TranscriptIndex: 0, Action: ActionDropped, Reason: ReasonEmptyTurn}},
 		},
 		{
-			name:       "missing tool result synthesized",
-			prefix:     pref("p"),
+			name:   "missing tool result synthesized",
+			prefix: pref("p"),
 			transcript: []session.SessionRecord{
 				rec(session.RecordToolCall, "", nil, "", []session.ToolCall{{ID: "call-1", Name: "read_file"}}),
 			},
@@ -178,15 +184,10 @@ func TestPrepare(t *testing.T) {
 			name:       "per call context injected into user message",
 			prefix:     pref("p"),
 			transcript: []session.SessionRecord{userText("What should I do next?")},
-			bundles: []contextprovider.ContextBundle{{
-				RequestID:  "bundle-1",
-				ProviderID: "provider-1",
-				PerCall: contextprovider.ContextCollection{
-					Buckets: contextprovider.ContextBuckets{
-						contextprovider.SlotMemory: {
-							{ID: "abc123", Content: "Remember the plan."},
-						},
-					},
+			dynamic: []contextprovider.ContextResponse{{
+				RequestID: "bundle-1",
+				Candidates: []contextprovider.ContextCandidate{
+					{ID: "abc123", Metadata: slotMeta(contextprovider.SlotMemory), Content: "Remember the plan."},
 				},
 			}},
 			wantMsgs: []modelinvocation.ModelMessage{{
@@ -199,27 +200,21 @@ func TestPrepare(t *testing.T) {
 			wantNotes: []NormalizationNote{},
 		},
 		{
-			name:       "multiple context bundles merged",
+			name:       "multiple dynamic responses merged",
 			prefix:     pref("p"),
 			transcript: []session.SessionRecord{userText("Go.")},
-			bundles: []contextprovider.ContextBundle{
+			dynamic: []contextprovider.ContextResponse{
 				{
-					RequestID:  "bundle-1",
-					ProviderID: "provider-1",
-					PerCall: contextprovider.ContextCollection{
-						Buckets: contextprovider.ContextBuckets{
-							contextprovider.SlotMemory: {{ID: "m1", Content: "fact one"}},
-						},
+					RequestID: "bundle-1",
+					Candidates: []contextprovider.ContextCandidate{
+						{ID: "m1", Metadata: slotMeta(contextprovider.SlotMemory), Content: "fact one"},
 					},
 				},
 				{
-					RequestID:  "bundle-2",
-					ProviderID: "provider-2",
-					PerCall: contextprovider.ContextCollection{
-						Buckets: contextprovider.ContextBuckets{
-							contextprovider.SlotMemory: {{ID: "m2", Content: "fact two"}},
-							contextprovider.SlotSkills: {{ID: "s1", Content: "skill one"}},
-						},
+					RequestID: "bundle-2",
+					Candidates: []contextprovider.ContextCandidate{
+						{ID: "m2", Metadata: slotMeta(contextprovider.SlotMemory), Content: "fact two"},
+						{ID: "s1", Metadata: slotMeta(contextprovider.SlotSkills), Content: "skill one"},
 					},
 				},
 			},
@@ -242,13 +237,10 @@ func TestPrepare(t *testing.T) {
 			name:       "context injected into last user message",
 			prefix:     pref("p"),
 			transcript: []session.SessionRecord{userText("first"), assistantText("ok"), userText("last")},
-			bundles: []contextprovider.ContextBundle{{
-				RequestID:  "bundle-1",
-				ProviderID: "provider-1",
-				PerCall: contextprovider.ContextCollection{
-					Buckets: contextprovider.ContextBuckets{
-						contextprovider.SlotMemory: {{ID: "m1", Content: "fact one"}},
-					},
+			dynamic: []contextprovider.ContextResponse{{
+				RequestID: "bundle-1",
+				Candidates: []contextprovider.ContextCandidate{
+					{ID: "m1", Metadata: slotMeta(contextprovider.SlotMemory), Content: "fact one"},
 				},
 			}},
 			wantMsgs: []modelinvocation.ModelMessage{
@@ -262,19 +254,16 @@ func TestPrepare(t *testing.T) {
 			wantNotes: []NormalizationNote{},
 		},
 		{
-			name:       "no user message skips injection",
-			prefix:     pref("p"),
+			name:   "no user message skips injection",
+			prefix: pref("p"),
 			transcript: []session.SessionRecord{
 				rec(session.RecordToolCall, "", nil, "", []session.ToolCall{{ID: "call-1", Name: "ls"}}),
 				rec(session.RecordToolResult, "", strPtr("out"), "call-1", nil),
 			},
-			bundles: []contextprovider.ContextBundle{{
-				RequestID:  "bundle-1",
-				ProviderID: "provider-1",
-				PerCall: contextprovider.ContextCollection{
-					Buckets: contextprovider.ContextBuckets{
-						contextprovider.SlotMemory: {{ID: "m1", Content: "fact one"}},
-					},
+			dynamic: []contextprovider.ContextResponse{{
+				RequestID: "bundle-1",
+				Candidates: []contextprovider.ContextCandidate{
+					{ID: "m1", Metadata: slotMeta(contextprovider.SlotMemory), Content: "fact one"},
 				},
 			}},
 			wantMsgs: []modelinvocation.ModelMessage{
@@ -307,10 +296,10 @@ func TestPrepare(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			service := &Service{}
 			req := PrepareRequest{
-				ID:             "req-prepare",
-				Prefix:         tt.prefix,
-				Transcript:     tt.transcript,
-				ContextBundles: tt.bundles,
+				ID:         "req-prepare",
+				Prefix:     tt.prefix,
+				Transcript: tt.transcript,
+				Dynamic:    tt.dynamic,
 			}
 			got, err := service.Prepare(req)
 

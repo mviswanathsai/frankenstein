@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync"
 
-	"frankenstein/internal/contextprovider"
 	"frankenstein/internal/session"
+	"frankenstein/internal/touchedpath"
 )
 
 const (
@@ -69,7 +69,7 @@ type BackendResult struct {
 	Status        ToolResultStatus
 	Text          string
 	Refs          []session.ContextRef
-	TouchedPaths  []contextprovider.TouchedPath
+	TouchedPaths  []touchedpath.TouchedPath
 	SideEffect    ToolSideEffect
 	StopRequested bool
 	Failure       *ToolFailure
@@ -699,7 +699,7 @@ func cancelledBeforeStart(call ToolCall) ToolResult {
 		Status:       ResultCancelled,
 		Text:         "Call was cancelled before it started.",
 		Refs:         []session.ContextRef{},
-		TouchedPaths: []contextprovider.TouchedPath{},
+		TouchedPaths: []touchedpath.TouchedPath{},
 		SideEffect:   SideEffectNone,
 		Failure:      &ToolFailure{Code: FailureCancelled, Retryable: true},
 	}
@@ -712,7 +712,7 @@ func callFailure(call ToolCall, code, text string, retryable bool) *ToolResult {
 		Status:       ResultFailed,
 		Text:         text,
 		Refs:         []session.ContextRef{},
-		TouchedPaths: []contextprovider.TouchedPath{},
+		TouchedPaths: []touchedpath.TouchedPath{},
 		SideEffect:   SideEffectNone,
 		Failure:      &ToolFailure{Code: code, Retryable: retryable},
 	}
@@ -726,7 +726,7 @@ func failedResult(call ToolCall, tool *registeredTool, code, text string, retrya
 		Status:       ResultFailed,
 		Text:         text,
 		Refs:         []session.ContextRef{},
-		TouchedPaths: []contextprovider.TouchedPath{},
+		TouchedPaths: []touchedpath.TouchedPath{},
 		SideEffect:   SideEffectNone,
 		Failure:      &ToolFailure{Code: code, Retryable: retryable},
 	}
@@ -740,7 +740,7 @@ func successResult(call ToolCall, tool *registeredTool, text string, sideEffect 
 		Status:       ResultSucceeded,
 		Text:         text,
 		Refs:         []session.ContextRef{},
-		TouchedPaths: []contextprovider.TouchedPath{},
+		TouchedPaths: []touchedpath.TouchedPath{},
 		SideEffect:   sideEffect,
 	}
 }
@@ -796,7 +796,7 @@ func normalizeBackendResult(call ToolCall, tool *registeredTool, result BackendR
 		out.Refs = []session.ContextRef{}
 	}
 	if out.TouchedPaths == nil {
-		out.TouchedPaths = []contextprovider.TouchedPath{}
+		out.TouchedPaths = []touchedpath.TouchedPath{}
 	}
 	if out.Status != ResultSucceeded && out.Failure == nil {
 		switch out.Status {
@@ -845,7 +845,7 @@ func malformedBackendResult(call ToolCall, tool *registeredTool, result BackendR
 		out.Refs = []session.ContextRef{}
 	}
 	if out.TouchedPaths == nil {
-		out.TouchedPaths = []contextprovider.TouchedPath{}
+		out.TouchedPaths = []touchedpath.TouchedPath{}
 	}
 	return out
 }
