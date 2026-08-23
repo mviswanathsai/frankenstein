@@ -32,17 +32,21 @@ means.
 ## Drafted Contracts
 
 - session — `session.v0.3` — `docs/session-capability-contract.md`
-- context provider — `context_provider.v0.1` —
-  `docs/context-provider-capability-contract.md`
+- context provider — `context_provider.v0.2` —
+  `docs/context-provider-capability-contract.md` (two read-style actions —
+  `get_dynamic_context` per turn, `get_stable_context` once per session — and
+  one shared `ContextResponse` shape; Go implementation still v0.1-shaped and
+  needs the v0.2 update)
 - tool invocation — `tool_invocation.v0` —
   `docs/tool-invocation-capability-contract.md`
 - model invocation — `model_invocation.v0` —
   `docs/model-invocation-capability-contract.md` (dossier at
   `docs/model-invocation-service-dossier.md`)
-- context builder — `context_builder.v0.1` —
-  `docs/context-builder-capability-contract.md` (implemented in
-  `internal/contextbuilder/`; dossier at
-  `docs/context-builder-service-dossier.md`)
+- context renderer — `context_renderer.v0.3` —
+  `docs/context-renderer-capability-contract.md` (renamed and collapsed from
+  context builder; dossier at `docs/context-renderer-service-dossier.md`; Go
+  implementation still the v0 builder in `internal/contextbuilder/` and needs
+  the rework)
 
 Not yet drafted: runtime kernel, memory, compression, and the observability
 event model.
@@ -70,12 +74,17 @@ Work in this order. Move each item forward as it lands.
    interrupt behavior in `chat_completion_helpers.py`, plugin hooks, approval
    and checkpoint policy, gateway delivery constraints, memory providers, and
    eval/cron paths.
-3. Context builder (`context_builder.v0`) is implemented in
-   `internal/contextbuilder/` — `estimate`, `assemble`, and `prepare` with
-   test coverage. Wiring it into the harness now depends on the runtime-kernel
-   contract. Sizing inputs remain for the next pass: `tool_invocation.v0`,
-   `context_provider.v0.1`, and `session.v0.3` do not yet accept token budgets
-   on `list_tools`, `get_context`, and `get`.
+3. Context renderer rework — decided, implementation sequenced. The v0
+   builder in `internal/contextbuilder/` (`estimate`, `assemble`, `prepare`)
+   is superseded by `context_renderer.v0.3`: one `render` action, a
+   session-scoped `config` slot, `ContextResponse` dynamic input. All design
+   decisions and pairing policy are recorded in
+   `docs/context-renderer-service-dossier.md`. Implementation order: first the
+   context provider v0.2 Go update (flat `ContextResponse`, the new
+   `get_stable_context` action, `metadata.slot` conventions), then the
+   renderer rework (package `internal/contextrenderer`, single `Render`,
+   kernel builds config once per session and holds it, `built_prefix` cache
+   removed, no per-turn catalog fetch).
 4. Draft the runtime-kernel contract — the coherence point the other contracts
    reach into: turn lifecycle, ordering, budgets, cancellation, recovery, and
    replay invariants. The runtime kernel is the next capability in active
@@ -113,10 +122,9 @@ The service slots pillar 1 formalizes. Candidate areas, not final contracts.
 - Session experience — how prior work is remembered and materialized. Flat
   transcript, tree branches, append-only event log, DAG, ephemeral,
   privacy-minimized, collaborative.
-- Context construction — what the model sees: prompt assembly, stable and
-  per-call partitioning, project instructions, memory injection, tool schemas,
-  token budgets, prompt caching, transcript compression. Parts are now drafted:
-  `context_provider.v0.1` and `context_builder.v0`.
+- Context construction — what the model sees: prompt derivation, transcript
+  normalization, dynamic-context delivery, template policy. Now drafted as
+  `context_renderer.v0.3` (provider: `context_provider.v0.2`).
 - Memory — disabled, explicit notes, behavioral, project-local, semantic,
   graph, episodic, external. Extraction should be background, best-effort, and
   non-blocking.
