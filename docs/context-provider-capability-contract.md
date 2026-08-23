@@ -23,9 +23,8 @@ two read-style actions and one shared flat `ContextResponse` shape. The
 - `context_provider.get_dynamic_context` — what must be found during the
   session, called per turn
 - `context_provider.get_stable_context` — runtime-loaded stable material
-  (agent identity, configured instructions, skill indexes, tool guidance),
-  called once per session; the runtime freezes the result into the context
-  renderer's `config`
+  (agent identity, configured instructions, skill indexes), called once per
+  session; the runtime freezes the result into the context renderer's `config`
 
 Placement and retention are renderer decisions, not provider labels.
 
@@ -35,11 +34,15 @@ The context provider supplies dynamic context candidates during a session. The
 harness splits context by how it becomes known:
 
 - what the runtime already knows — agent identity, configured instructions,
-  workspace grants, tool guidance — is loaded at startup and passed directly
-  to the context renderer as stable material
+  workspace grants — is loaded at startup and passed directly to the context
+  renderer as stable material
 - what must be found during the session — memory recall for the current
   message, an instruction file discovered in a directory a tool just touched,
   query-shaped retrieval — is this capability's job
+
+Tool guidance is owned by the tool invocation capability; the runtime hands it
+to the context renderer directly as known material alongside the frozen stable
+context, and it never passes through this contract.
 
 The provider does not decide what the model sees, where it is placed, or how
 long it is retained. It returns candidates with honest accounting of the
@@ -137,9 +140,11 @@ primary parser for raw user text references. `ContextRef` is the shared type
 established by `session.v0.3`; this contract does not redefine it.
 
 `touched_paths` is optional request-time evidence from the runtime or tool
-executor. It is not a canonical session-record field. `TouchedPath` is shared
-vocabulary produced by the tool invocation capability; its definition below
-may relocate to the tool invocation contract when that contract is revised.
+executor. It is not a canonical session-record field. `TouchedPath` is
+frontend/gateway-originated request-time evidence vocabulary: its definition
+will live with the gateway capability when that contract exists; until then
+it lives in a neutral shared package, not defined by either the provider or
+tool invocation contract.
 
 ```text
 TouchedPath {
@@ -198,9 +203,9 @@ Terminal events:
 ### `context_provider.get_stable_context`
 
 Return the session's stable material: agent identity, configured
-instructions, skill indexes, and tool guidance. Called once per session by the
-runtime; the runtime freezes the result into the context renderer's `config`
-and does not re-call it per turn.
+instructions, and skill indexes. Called once per session by the runtime; the
+runtime freezes the result into the context renderer's `config` and does not
+re-call it per turn.
 
 Input is a subset of `ContextRequest`:
 
@@ -220,11 +225,13 @@ not part of this action.
 
 The provider discovers stable material the same way it discovers anything
 else — convention files such as AGENTS.md, CLAUDE.md, CURSOR.md, and SOUL.md
-within the granted boundary, plus configured identity and guidance — and
-classifies it into named sections. The section name rides in the candidate's
-`metadata` (`slot` convention: `identity`, `instructions`, `skills`,
-`tool_guidance`); how the renderer or runtime keys on that convention is an
-implementation choice. Content is the section text.
+within the granted boundary, plus configured identity — and classifies it
+into named sections. Candidate classification rides in advisory candidate
+`metadata` under the key `slot`. The slot vocabulary is an
+implementation-defined pairing convention between provider and renderer, not
+contract surface: no closed vocabulary exists, and the renderer or runtime
+takes the union of what providers offer. The values the reference provider
+emits are documented in the service dossier. Content is the section text.
 
 The response uses the same `ContextResponse` shape as
 `get_dynamic_context`. Candidates are ordered; the response is frozen by the
@@ -467,8 +474,6 @@ contribution seam for plugins; nothing here precludes it.
 - Whether `workspace_roots` enforcement belongs to the provider (current
   stance) or to the mediator/runtime, with roots as caller-granted evidence.
   Under discussion.
-- Whether `TouchedPath` relocates to the tool invocation contract or a shared
-  types document, since tool invocation is its producer.
 - Whether emitted snapshots should become durable transcript records. This
   question follows the reference renderer's delivery policy and has relocated
   to the context-renderer dossier.

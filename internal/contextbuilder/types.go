@@ -51,13 +51,13 @@ type Allocation struct {
 }
 
 // AssembleRequest asks the builder to assemble the system prompt from
-// context bundles and the tool catalog.
+// stable candidates and the tool catalog.
 type AssembleRequest struct {
-	ID             string                          `json:"id"`
-	SessionID      string                          `json:"session_id,omitempty"`
-	Model          string                          `json:"model"`
-	ContextBundles []contextprovider.ContextBundle `json:"context_bundles"`
-	Catalog        *toolinvocation.ToolCatalog     `json:"catalog,omitempty"`
+	ID               string                             `json:"id"`
+	SessionID        string                             `json:"session_id,omitempty"`
+	Model            string                             `json:"model"`
+	StableCandidates []contextprovider.ContextCandidate `json:"stable_candidates"`
+	Catalog          *toolinvocation.ToolCatalog        `json:"catalog,omitempty"`
 }
 
 // BuiltPrefix is the assembled system prompt, echoed verbatim into
@@ -71,12 +71,12 @@ type BuiltPrefix struct {
 // PrepareRequest asks the builder to normalize the transcript and inject
 // per-call context into a ModelInput ready for Model Invocation.
 type PrepareRequest struct {
-	ID             string                          `json:"id"`
-	SessionID      string                          `json:"session_id,omitempty"`
-	TurnID         string                          `json:"turn_id,omitempty"`
-	Prefix         BuiltPrefix                     `json:"prefix"`
-	Transcript     []session.SessionRecord         `json:"transcript"`
-	ContextBundles []contextprovider.ContextBundle `json:"context_bundles,omitempty"`
+	ID         string                            `json:"id"`
+	SessionID  string                            `json:"session_id,omitempty"`
+	TurnID     string                            `json:"turn_id,omitempty"`
+	Prefix     BuiltPrefix                       `json:"prefix"`
+	Transcript []session.SessionRecord           `json:"transcript"`
+	Dynamic    []contextprovider.ContextResponse `json:"dynamic,omitempty"`
 }
 
 // BuiltContext is the assembled input and the evidence of every structural

@@ -642,3 +642,77 @@ policy to the other's obligations:
 - **Relocated — snapshot durability.** Whether emitted snapshots become
   durable transcript records is a question about the reference builder's
   delivery policy; it moves to the builder dossier.
+
+## Discussion Record: v0.2 Go Implementation Decisions (2026-08-23)
+
+Decisions from the design session ahead of the v0.2 Go migration, in order of
+consequence:
+
+- **Accepted — scope is provider migration plus mechanical scaffolding.**
+  `internal/contextprovider` moves v0.1→v0.2; kernel, contextbuilder, and CLI
+  get mechanical consumer updates only; the contextbuilder remains temporary
+  scaffolding until the renderer rework lands; no event-log wiring.
+- **Accepted — two-method interface.** `Initialize`/`GetContext` become
+  `GetDynamicContext`/`GetStableContext` returning
+  `(*ContextResponse, *ContextFailure)`, exactly-one-of non-nil; the kernel
+  holds the frozen stable response separately from per-turn dynamic
+  responses.
+- **Accepted — flat explicit request structs.** `DynamicContextRequest` and
+  `StableContextRequest` duplicate the shared four fields rather than
+  embedding a base struct; each action's floor reads self-contained.
+- **Accepted — payload shapes follow the contract floor.** `ContextResponse
+  {request_id, candidates, failures}`; `ContextCandidate {id, metadata?,
+  content, refs?}`; `ContextFailure {request_id, code, message?, retryable}`
+  with required plain-bool `retryable`; `RuntimeFacts` reduced to `cwd`;
+  `ProviderID` removed from response and failure payloads (identity stays on
+  `Info()` and future event envelopes); `TriggeringRecord` replaced by an
+  optional transcript window; `CurrentDate` dropped; buckets, `referenced`
+  channel, and pointer-`retryable` deleted. Candidate and failure slices are
+  never nil.
+- **Accepted — slot vocabulary is implementation-defined.** No typed slot
+  enum; `MetadataKeySlot = "slot"` plus plain string constants for values the
+  reference provider emits: `identity`, `user_profile`,
+  `project_instructions`, `memory`, `skills`, `unknown`. Consumers take the
+  union of offered slots; unknown slots are hints, not errors. The earlier
+  tentative record's name set stands, minus `session_fact` and
+  `tool_guidance`, which the reference provider never emitted.
+- **Accepted — tool guidance leaves the provider entirely.** Tool invocation
+  owns its guidance; the runtime passes it to the renderer as config-side
+  material. The provider contract text is corrected accordingly; the renderer
+  dossier's claim that the runtime sources guidance via `get_stable_context`
+  gets corrected during the renderer track.
+- **Accepted — deterministic candidate IDs, pruned hash input.** Semantic
+  input becomes `providerID|slot|path` for file candidates and
+  `providerID|slot|label` for synthetic ones; lifetime, referenced, and
+  source-kind leave the hash. Priority stays out of identity. The same source
+  emitted by both actions shares an ID; within-response deduplication keys on
+  candidate ID alone.
+- **Accepted — stable/dynamic partition.** `get_stable_context` runs the
+  startup sweep over roots and cwd ancestor chains (all adapters, skill
+  indexes) and remembers emitted canonical paths as its stable set.
+  `get_dynamic_context` is strictly evidence-driven (request refs with sibling
+  inspection; touched paths with file/dir/parent discovery) plus the
+  accumulated dynamic index re-offered each call — a complete current dynamic
+  offering paired with the renderer's diff-gated delivery. Discovered
+  candidates whose source is in the stable set are omitted; explicit input
+  refs are never omitted (accounting invariant requires ref-on-candidate or
+  failure entry). Dropped: the "?"-in-message memory heuristic, per-call
+  memory destinations, and any transcript consumption. Precedent verified
+  against deepseek-harness agent-instructions (producer-side memory enforcing
+  the split); Pi noted as the freeze-only counter-example. Cache freshness
+  becomes a required test because re-offering makes stale reads load-bearing.
+- **Accepted — TouchedPath parks in a neutral micro-package.**
+  `internal/touchedpath` holds the type; contextprovider and toolinvocation
+  both import it; relocates to the gateway package when it exists. Ownership
+  is frontend/gateway, decided by Viswa.
+- **Accepted — events and envelopes deferred.** Terminal events are
+  contract-defined but unwired: the service returns (response, failure);
+  emission belongs to the mediator layer once the semantic event log exists.
+  No private `CommandEnvelope` is invented ahead of the mediator track.
+- **Accepted — terminal-failure code corrections.** Unknown internal errors
+  map to `internal_failure` (not `invalid_request`); `service_unavailable`
+  reserved; the remaining implementation code strings stay as-is, consistent
+  with the floor principle that payload failure-code vocabularies are not
+  contractual.
+- **Accepted — CLI mirrors action names.** Subcommands renamed
+  `get-stable-context` / `get-dynamic-context` with the new payload types.

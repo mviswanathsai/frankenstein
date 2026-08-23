@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"frankenstein/internal/session"
+	"frankenstein/internal/touchedpath"
 )
 
 func TestBaseFilenameClassification(t *testing.T) {
 	tests := []struct {
 		name string
-		slot ContextSlot
+		slot string
 	}{
 		{"USER.md", SlotUserProfile},
 		{"MEMORY.md", SlotMemory},
@@ -48,22 +49,39 @@ func TestWorkspaceRootAndCWDValidation(t *testing.T) {
 	root := t.TempDir()
 	provider := NewProvider(Options{})
 
-	_, failure := provider.Initialize(context.Background(), ContextInitializeRequest{
+	_, failure := provider.GetStableContext(context.Background(), StableContextRequest{
 		ID:             "req",
-		Runtime:        RuntimeFacts{CWD: root},
+		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: "relative"}},
 	})
 	if failure == nil || failure.Code != FailureInvalidRelativeWorkspaceRoot {
 		t.Fatalf("relative root failure = %+v, want %s", failure, FailureInvalidRelativeWorkspaceRoot)
 	}
+	if failure.Retryable {
+		t.Fatalf("relative root failure should be non-retryable")
+	}
 
-	_, failure = provider.Initialize(context.Background(), ContextInitializeRequest{
+	_, failure = provider.GetStableContext(context.Background(), StableContextRequest{
 		ID:             "req",
-		Runtime:        RuntimeFacts{CWD: "relative"},
+		Runtime:        &RuntimeFacts{CWD: "relative"},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
 	})
 	if failure == nil || failure.Code != FailureInvalidRelativeCWD {
 		t.Fatalf("relative cwd failure = %+v, want %s", failure, FailureInvalidRelativeCWD)
+	}
+}
+
+func TestMissingRequestIDIsInvalidRequest(t *testing.T) {
+	provider := NewProvider(Options{})
+	_, failure := provider.GetStableContext(context.Background(), StableContextRequest{
+		WorkspaceRoots: []WorkspaceRoot{},
+	})
+	if failure == nil || failure.Code != FailureInvalidRequest || failure.Retryable {
+		t.Fatalf("failure = %+v, want invalid_request non-retryable", failure)
+	}
+	_, failure = provider.GetDynamicContext(context.Background(), DynamicContextRequest{})
+	if failure == nil || failure.Code != FailureInvalidRequest {
+		t.Fatalf("dynamic failure = %+v, want invalid_request", failure)
 	}
 }
 
@@ -93,7 +111,7 @@ func TestPathAuthorizationContainment(t *testing.T) {
 	}
 }
 
-func TestInitializeDiscoversInstructionsAndCompactSkillsIndex(t *testing.T) {
+func TestStableContextDiscoversInstructionsAndCompactSkillsIndex(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(root, "service")
 	mustMkdir(t, cwd)
@@ -103,28 +121,33 @@ func TestInitializeDiscoversInstructionsAndCompactSkillsIndex(t *testing.T) {
 	mustMkdir(t, filepath.Join(root, ".agents", "skills", "tester"))
 	mustWrite(t, filepath.Join(root, ".agents", "skills", "tester", "SKILL.md"), "---\nname: tester\ndescription: Run tests.\n---\nFULL BODY SHOULD NOT BE IN INDEX")
 
-	bundle := mustInitialize(t, NewProvider(Options{}), ContextInitializeRequest{
-		ID:             "init",
-		Runtime:        RuntimeFacts{CWD: cwd},
+	response := mustStable(t, NewProvider(Options{}), StableContextRequest{
+		ID:             "stable",
+		Runtime:        &RuntimeFacts{CWD: cwd},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
 	})
 
-	project := bucketContents(bundle.Retained.Buckets[SlotProjectInstructions])
+	project := slotContents(response, SlotProjectInstructions)
 	if !strings.Contains(project, "root instructions") {
 		t.Fatalf("project instructions missing root AGENTS.md: %s", project)
 	}
 	if !strings.Contains(project, "backend cursor rule") {
 		t.Fatalf("project instructions missing cursor rule: %s", project)
 	}
-	skills := bucketContents(bundle.Retained.Buckets[SlotSkills])
+	skills := slotContents(response, SlotSkills)
 	if !strings.Contains(skills, "tester: Run tests.") {
 		t.Fatalf("skills index missing compact metadata: %s", skills)
 	}
 	if strings.Contains(skills, "FULL BODY SHOULD NOT BE IN INDEX") {
 		t.Fatalf("skills index loaded full skill body: %s", skills)
 	}
-	if len(bundle.PerCall.Buckets) != 0 || len(bundle.PerCall.Referenced) != 0 {
-		t.Fatalf("initialize per_call = %+v, want empty", bundle.PerCall)
+	for _, candidate := range response.Candidates {
+		if candidate.Metadata[MetadataKeySlot] == nil {
+			t.Fatalf("candidate %s missing slot metadata", candidate.ID)
+		}
+		if candidate.Content == "" {
+			t.Fatalf("candidate %s has empty content", candidate.ID)
+		}
 	}
 }
 
@@ -133,12 +156,12 @@ func TestCodexOverridePrecedence(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "AGENTS.md"), "base")
 	mustWrite(t, filepath.Join(root, "AGENTS.override.md"), "override")
 
-	bundle := mustInitialize(t, NewProvider(Options{}), ContextInitializeRequest{
-		ID:             "init",
-		Runtime:        RuntimeFacts{CWD: root},
+	response := mustStable(t, NewProvider(Options{}), StableContextRequest{
+		ID:             "stable",
+		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
 	})
-	content := bucketContents(bundle.Retained.Buckets[SlotProjectInstructions])
+	content := slotContents(response, SlotProjectInstructions)
 	if !strings.Contains(content, "override") {
 		t.Fatalf("override not included: %s", content)
 	}
@@ -147,49 +170,81 @@ func TestCodexOverridePrecedence(t *testing.T) {
 	}
 }
 
-func TestExplicitRefsAreReferencedOrFailures(t *testing.T) {
+func TestExplicitRefsProduceCandidatesOrFailures(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTS.md"), "explicit instructions")
 	mustWrite(t, filepath.Join(root, "note.txt"), "plain note")
 	provider := NewProvider(Options{})
 
-	bundle := mustGetContext(t, provider, ContextRequest{
+	response := mustDynamic(t, provider, DynamicContextRequest{
 		ID:             "ctx",
 		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
-		TriggeringRecord: &session.SessionRecord{Refs: []session.ContextRef{
+		Refs: []session.ContextRef{
 			{Kind: "file", Target: "AGENTS.md"},
 			{Kind: "file", Target: "missing.md"},
 			{Kind: "url", Target: "https://example.com"},
-		}},
+		},
 	})
 
-	referenced := collectionContents(bundle.PerCall.Referenced)
-	if !strings.Contains(referenced, "explicit instructions") {
-		t.Fatalf("explicit file ref was not returned in per_call.referenced: %s", referenced)
+	var matched *ContextCandidate
+	for i := range response.Candidates {
+		if strings.Contains(response.Candidates[i].Content, "explicit instructions") {
+			matched = &response.Candidates[i]
+			break
+		}
 	}
-	project := bucketContents(bundle.Retained.Buckets[SlotProjectInstructions])
-	if !strings.Contains(project, "explicit instructions") {
-		t.Fatalf("recognized explicit AGENTS.md was not semantically classified: %s", project)
+	if matched == nil {
+		t.Fatalf("explicit file ref was not returned: %+v", response.Candidates)
 	}
-	failures := strings.Join(bundle.Failures, "\n")
+	if matched.Metadata[MetadataKeySlot] != SlotProjectInstructions {
+		t.Fatalf("recognized explicit AGENTS.md slot = %v, want %s", matched.Metadata[MetadataKeySlot], SlotProjectInstructions)
+	}
+	if len(matched.Refs) != 1 || matched.Refs[0].Target != "AGENTS.md" {
+		t.Fatalf("candidate refs = %+v, want the original input ref", matched.Refs)
+	}
+
+	failures := strings.Join(response.Failures, "\n")
 	if !strings.Contains(failures, FailureSourceMissing) || !strings.Contains(failures, FailureUnsupportedRefKind) {
-		t.Fatalf("failures = %v, want missing and unsupported ref entries", bundle.Failures)
+		t.Fatalf("failures = %v, want missing and unsupported ref entries", response.Failures)
+	}
+	if strings.Contains(failures, "AGENTS.md") {
+		t.Fatalf("dereferenced ref was also reported failed: %v", response.Failures)
+	}
+}
+
+func TestFailureEntriesKeepInputOrder(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "first-missing.txt"), "")
+	response := mustDynamic(t, NewProvider(Options{}), DynamicContextRequest{
+		ID:             "ctx",
+		Runtime:        &RuntimeFacts{CWD: root},
+		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
+		Refs: []session.ContextRef{
+			{Kind: "file", Target: "zzz-missing.md"},
+			{Kind: "file", Target: "aaa-missing.md"},
+		},
+	})
+	if len(response.Failures) != 2 {
+		t.Fatalf("failures = %v, want two entries", response.Failures)
+	}
+	if !strings.Contains(response.Failures[0], "zzz-missing.md") || !strings.Contains(response.Failures[1], "aaa-missing.md") {
+		t.Fatalf("failures out of input order: %v", response.Failures)
 	}
 }
 
 func TestRelativeRefWithoutCWDProducesFailure(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "file.txt"), "content")
-	bundle := mustGetContext(t, NewProvider(Options{}), ContextRequest{
+	response := mustDynamic(t, NewProvider(Options{}), DynamicContextRequest{
 		ID:             "ctx",
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
-		TriggeringRecord: &session.SessionRecord{Refs: []session.ContextRef{
+		Refs: []session.ContextRef{
 			{Kind: "file", Target: "file.txt"},
-		}},
+		},
 	})
-	if got := strings.Join(bundle.Failures, "\n"); !strings.Contains(got, FailureMissingCWDForRelativePath) {
-		t.Fatalf("failures = %v, want missing cwd", bundle.Failures)
+	if got := strings.Join(response.Failures, "\n"); !strings.Contains(got, FailureMissingCWDForRelativePath) {
+		t.Fatalf("failures = %v, want missing cwd", response.Failures)
 	}
 }
 
@@ -199,15 +254,39 @@ func TestTouchedNonexistentPathDiscoversParentInstructions(t *testing.T) {
 	mustMkdir(t, backend)
 	mustWrite(t, filepath.Join(backend, "AGENTS.md"), "backend instructions")
 
-	bundle := mustGetContext(t, NewProvider(Options{}), ContextRequest{
+	response := mustDynamic(t, NewProvider(Options{}), DynamicContextRequest{
 		ID:             "ctx",
 		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
-		TouchedPaths:   []TouchedPath{{Path: "backend/new_file.go", Operation: "write"}},
+		TouchedPaths:   []touchedpath.TouchedPath{{Path: "backend/new_file.go", Operation: "write"}},
 	})
-	content := bucketContents(bundle.Retained.Buckets[SlotProjectInstructions])
+	content := slotContents(response, SlotProjectInstructions)
 	if !strings.Contains(content, "backend instructions") {
 		t.Fatalf("parent instructions not discovered: %s", content)
+	}
+}
+
+func TestUnknownReasonIsAccepted(t *testing.T) {
+	response := mustDynamic(t, NewProvider(Options{}), DynamicContextRequest{
+		ID:             "ctx",
+		Reason:         "totally_novel_reason",
+		WorkspaceRoots: []WorkspaceRoot{},
+	})
+	if response.RequestID != "ctx" || len(response.Candidates) != 0 || len(response.Failures) != 0 {
+		t.Fatalf("unexpected response: %+v", response)
+	}
+}
+
+func TestEmptyRootsWithoutCWDDoNotGrantAccess(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "AGENTS.md"), "instructions")
+	response := mustDynamic(t, NewProvider(Options{}), DynamicContextRequest{
+		ID:             "ctx",
+		WorkspaceRoots: []WorkspaceRoot{},
+		TouchedPaths:   []touchedpath.TouchedPath{{Path: root, Operation: "read"}},
+	})
+	if len(response.Candidates) != 0 {
+		t.Fatalf("candidates = %+v, want none without granted roots", response.Candidates)
 	}
 }
 
@@ -227,33 +306,33 @@ func TestSymlinkAuthorization(t *testing.T) {
 	}
 
 	provider := NewProvider(Options{})
-	bundle := mustGetContext(t, provider, ContextRequest{
+	response := mustDynamic(t, provider, DynamicContextRequest{
 		ID:             "ok",
 		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
-		TriggeringRecord: &session.SessionRecord{Refs: []session.ContextRef{
+		Refs: []session.ContextRef{
 			{Kind: "file", Target: "inside-link.txt"},
-		}},
+		},
 	})
-	if !strings.Contains(collectionContents(bundle.PerCall.Referenced), "inside") {
-		t.Fatalf("in-root symlink was not read: %+v", bundle.PerCall.Referenced)
+	if !strings.Contains(contents(response.Candidates), "inside") {
+		t.Fatalf("in-root symlink was not read: %+v", response.Candidates)
 	}
 
-	bundle = mustGetContext(t, provider, ContextRequest{
+	response = mustDynamic(t, provider, DynamicContextRequest{
 		ID:             "bad",
 		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
-		TriggeringRecord: &session.SessionRecord{Refs: []session.ContextRef{
+		Refs: []session.ContextRef{
 			{Kind: "file", Target: "outside-link.txt"},
 			{Kind: "file", Target: "broken-link.txt"},
-		}},
+		},
 	})
-	failures := strings.Join(bundle.Failures, "\n")
+	failures := strings.Join(response.Failures, "\n")
 	if !strings.Contains(failures, FailureSymlinkEscape) {
-		t.Fatalf("failures = %v, want symlink escape", bundle.Failures)
+		t.Fatalf("failures = %v, want symlink escape", response.Failures)
 	}
 	if !strings.Contains(failures, FailureSourceMissing) {
-		t.Fatalf("failures = %v, want broken symlink missing", bundle.Failures)
+		t.Fatalf("failures = %v, want broken symlink missing", response.Failures)
 	}
 }
 
@@ -262,22 +341,22 @@ func TestNoExpansionOrBasenameSearch(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "$CTX_TARGET"), "literal env name")
 	mustWrite(t, filepath.Join(root, "actual.txt"), "actual")
 
-	bundle := mustGetContext(t, NewProvider(Options{}), ContextRequest{
+	response := mustDynamic(t, NewProvider(Options{}), DynamicContextRequest{
 		ID:             "ctx",
 		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
-		TriggeringRecord: &session.SessionRecord{Refs: []session.ContextRef{
+		Refs: []session.ContextRef{
 			{Kind: "file", Target: "$CTX_TARGET"},
 			{Kind: "file", Target: "*.txt"},
 			{Kind: "file", Target: "actual"},
-		}},
+		},
 	})
-	if !strings.Contains(collectionContents(bundle.PerCall.Referenced), "literal env name") {
+	if !strings.Contains(contents(response.Candidates), "literal env name") {
 		t.Fatalf("literal $ path was not read")
 	}
-	failures := strings.Join(bundle.Failures, "\n")
+	failures := strings.Join(response.Failures, "\n")
 	if !strings.Contains(failures, "*.txt") || !strings.Contains(failures, "actual") {
-		t.Fatalf("failures = %v, want glob and basename unresolved", bundle.Failures)
+		t.Fatalf("failures = %v, want glob and basename unresolved", response.Failures)
 	}
 }
 
@@ -286,12 +365,12 @@ func TestCandidateContentLimitAndUTF8Truncation(t *testing.T) {
 	body := strings.Repeat("å", 400)
 	mustWrite(t, filepath.Join(root, "AGENTS.md"), body)
 	provider := NewProvider(Options{MaxCandidateContentBytes: 512})
-	bundle := mustInitialize(t, provider, ContextInitializeRequest{
-		ID:             "init",
-		Runtime:        RuntimeFacts{CWD: root},
+	response := mustStable(t, provider, StableContextRequest{
+		ID:             "stable",
+		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
 	})
-	content := bucketContents(bundle.Retained.Buckets[SlotProjectInstructions])
+	content := slotContents(response, SlotProjectInstructions)
 	if len([]byte(content)) > 512 {
 		t.Fatalf("content bytes = %d, want <= 512", len([]byte(content)))
 	}
@@ -306,78 +385,233 @@ func TestCandidateContentLimitAndUTF8Truncation(t *testing.T) {
 func TestSourceTooLargeExplicitRefFailure(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "large.txt"), strings.Repeat("x", 100))
-	bundle := mustGetContext(t, NewProvider(Options{MaxSourceReadBytes: 64, MaxCandidateContentBytes: 256}), ContextRequest{
+	response := mustDynamic(t, NewProvider(Options{MaxSourceReadBytes: 64, MaxCandidateContentBytes: 256}), DynamicContextRequest{
 		ID:             "ctx",
 		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
-		TriggeringRecord: &session.SessionRecord{Refs: []session.ContextRef{
+		Refs: []session.ContextRef{
 			{Kind: "file", Target: "large.txt"},
-		}},
+		},
 	})
-	if got := strings.Join(bundle.Failures, "\n"); !strings.Contains(got, FailureSourceTooLarge) {
-		t.Fatalf("failures = %v, want source too large", bundle.Failures)
+	if got := strings.Join(response.Failures, "\n"); !strings.Contains(got, FailureSourceTooLarge) {
+		t.Fatalf("failures = %v, want source too large", response.Failures)
 	}
 }
 
-func TestFreshnessCacheAndCompleteCurrentOffering(t *testing.T) {
+// TestStableFreshnessOnReread proves the file cache never pins stale content:
+// get_stable_context called again after an edit must reflect the new bytes
+// (the contract forbids returning known stale content as usable context).
+func TestStableFreshnessOnReread(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "AGENTS.md")
 	mustWrite(t, path, "first")
 	provider := NewProvider(Options{})
-	_ = mustInitialize(t, provider, ContextInitializeRequest{
-		ID:             "init",
-		Runtime:        RuntimeFacts{CWD: root},
+	req := StableContextRequest{
+		ID:             "stable",
+		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
-	})
+	}
+
+	first := mustStable(t, provider, req)
+	if !strings.Contains(slotContents(first, SlotProjectInstructions), "first") {
+		t.Fatalf("initial stable response missing content: %+v", first.Candidates)
+	}
 
 	mustWrite(t, path, "second")
 	now := time.Now().Add(2 * time.Second)
 	if err := os.Chtimes(path, now, now); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
-	bundle := mustGetContext(t, provider, ContextRequest{
+	second := mustStable(t, provider, req)
+	got := slotContents(second, SlotProjectInstructions)
+	if strings.Contains(got, "first") || !strings.Contains(got, "second") {
+		t.Fatalf("stale content returned: %s", got)
+	}
+}
+
+// TestDynamicReofferFreshness is the load-bearing cache-freshness test: the
+// dynamic index re-offers every previously found source each call, so a stale
+// read would silently persist wrong content across turns.
+func TestDynamicReofferFreshness(t *testing.T) {
+	root := t.TempDir()
+	backend := filepath.Join(root, "backend")
+	mustMkdir(t, backend)
+	path := filepath.Join(backend, "AGENTS.md")
+	mustWrite(t, path, "first")
+	provider := NewProvider(Options{})
+
+	firstReq := DynamicContextRequest{
 		ID:             "ctx",
 		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
-	})
-	content := bucketContents(bundle.Retained.Buckets[SlotProjectInstructions])
-	if strings.Contains(content, "first") || !strings.Contains(content, "second") {
-		t.Fatalf("stale content returned: %s", content)
+		TouchedPaths:   []touchedpath.TouchedPath{{Path: filepath.Join(backend, "main.go"), Operation: "write"}},
+	}
+	first := mustDynamic(t, provider, firstReq)
+	if !strings.Contains(slotContents(first, SlotProjectInstructions), "first") {
+		t.Fatalf("discovered instructions missing: %+v", first.Candidates)
 	}
 
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("remove: %v", err)
-	}
-	bundle = mustGetContext(t, provider, ContextRequest{
+	// Re-offering continues without new evidence.
+	reoffered := mustDynamic(t, provider, DynamicContextRequest{
 		ID:             "ctx2",
 		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
 	})
-	if got := bucketContents(bundle.Retained.Buckets[SlotProjectInstructions]); got != "" {
-		t.Fatalf("deleted source still offered: %s", got)
+	if !strings.Contains(slotContents(reoffered, SlotProjectInstructions), "first") {
+		t.Fatalf("dynamic offering did not persist: %+v", reoffered.Candidates)
+	}
+
+	mustWrite(t, path, "second")
+	now := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	updated := mustDynamic(t, provider, DynamicContextRequest{
+		ID:             "ctx3",
+		Runtime:        &RuntimeFacts{CWD: root},
+		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
+	})
+	got := slotContents(updated, SlotProjectInstructions)
+	if strings.Contains(got, "first") || !strings.Contains(got, "second") {
+		t.Fatalf("re-offer served stale content: %s", got)
 	}
 }
 
-func TestRootsChangedRevokesCachedAccess(t *testing.T) {
+// TestStableSetOmittedFromDynamic enforces the stable/dynamic partition:
+// material frozen by get_stable_context is not re-offered by
+// get_dynamic_context, but an explicit input ref always wins because every
+// ref must be accounted for.
+func TestStableSetOmittedFromDynamic(t *testing.T) {
 	root := t.TempDir()
-	mustWrite(t, filepath.Join(root, "AGENTS.md"), "private")
+	backend := filepath.Join(root, "backend")
+	mustMkdir(t, backend)
+	mustWrite(t, filepath.Join(root, "AGENTS.md"), "root instructions")
+	mustWrite(t, filepath.Join(backend, "note.go"), "package backend")
 	provider := NewProvider(Options{})
-	_ = mustInitialize(t, provider, ContextInitializeRequest{
-		ID:             "init",
-		Runtime:        RuntimeFacts{CWD: root},
+
+	stable := mustStable(t, provider, StableContextRequest{
+		ID:             "stable",
+		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
 	})
-	bundle := mustGetContext(t, provider, ContextRequest{
+	var stableID string
+	for _, c := range stable.Candidates {
+		if c.Metadata[MetadataKeySlot] == SlotProjectInstructions && strings.Contains(c.Content, "root instructions") {
+			stableID = c.ID
+			break
+		}
+	}
+	if stableID == "" {
+		t.Fatalf("stable response missing AGENTS.md candidate: %+v", stable.Candidates)
+	}
+
+	dynamic := mustDynamic(t, provider, DynamicContextRequest{
+		ID:             "dyn",
+		Runtime:        &RuntimeFacts{CWD: root},
+		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
+		TouchedPaths:   []touchedpath.TouchedPath{{Path: filepath.Join(backend, "note.go"), Operation: "read"}},
+	})
+	for _, c := range dynamic.Candidates {
+		if c.ID == stableID {
+			t.Fatalf("stable material was re-offered dynamically: %+v", c)
+		}
+	}
+	if len(dynamic.Candidates) == 0 {
+		t.Fatalf("touched-path evidence produced nothing at all: %+v", dynamic)
+	}
+
+	explicit := mustDynamic(t, provider, DynamicContextRequest{
+		ID:             "explicit",
+		Runtime:        &RuntimeFacts{CWD: root},
+		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
+		Refs:           []session.ContextRef{{Kind: "file", Target: "AGENTS.md"}},
+	})
+	found := false
+	for _, c := range explicit.Candidates {
+		if c.ID == stableID && len(c.Refs) == 1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("explicit ref was omitted despite stable coverage: %+v", explicit)
+	}
+}
+
+// TestCandidateIDStabilityAcrossActions pins the deterministic identity rule:
+// the same logical candidate keeps its ID across responses within a provider
+// lifecycle, including across the two actions.
+func TestCandidateIDStabilityAcrossActions(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "AGENTS.md"), "instructions")
+	provider := NewProvider(Options{})
+
+	stable := mustStable(t, provider, StableContextRequest{
+		ID:             "s1",
+		Runtime:        &RuntimeFacts{CWD: root},
+		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
+	})
+	again := mustStable(t, provider, StableContextRequest{
+		ID:             "s2",
+		Runtime:        &RuntimeFacts{CWD: root},
+		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
+	})
+	if len(stable.Candidates) == 0 || len(stable.Candidates) != len(again.Candidates) {
+		t.Fatalf("candidate counts differ: %d vs %d", len(stable.Candidates), len(again.Candidates))
+	}
+	for i := range stable.Candidates {
+		if stable.Candidates[i].ID != again.Candidates[i].ID {
+			t.Fatalf("IDs differ across responses: %s vs %s", stable.Candidates[i].ID, again.Candidates[i].ID)
+		}
+	}
+
+	explicit := mustDynamic(t, provider, DynamicContextRequest{
+		ID:             "d1",
+		Runtime:        &RuntimeFacts{CWD: root},
+		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
+		Refs:           []session.ContextRef{{Kind: "file", Target: "AGENTS.md"}},
+	})
+	var dynamicID string
+	for _, c := range explicit.Candidates {
+		if strings.Contains(c.Content, "instructions") {
+			dynamicID = c.ID
+		}
+	}
+	if dynamicID != stable.Candidates[0].ID {
+		t.Fatalf("same source carried different IDs across actions: %s vs %s", dynamicID, stable.Candidates[0].ID)
+	}
+}
+
+// TestRootsChangedRevokesCachedAccess: authorization comes only from the
+// current request's roots; removing a root revokes access to its sources
+// even when the dynamic index holds them.
+func TestRootsChangedRevokesCachedAccess(t *testing.T) {
+	root := t.TempDir()
+	backend := filepath.Join(root, "backend")
+	mustMkdir(t, backend)
+	mustWrite(t, filepath.Join(backend, "AGENTS.md"), "private")
+	provider := NewProvider(Options{})
+
+	first := mustDynamic(t, provider, DynamicContextRequest{
 		ID:             "ctx",
+		Runtime:        &RuntimeFacts{CWD: root},
+		WorkspaceRoots: []WorkspaceRoot{{Path: root}},
+		TouchedPaths:   []touchedpath.TouchedPath{{Path: filepath.Join(backend, "new.go"), Operation: "write"}},
+	})
+	if len(first.Candidates) == 0 {
+		t.Fatalf("expected discovered candidates: %+v", first)
+	}
+
+	revoked := mustDynamic(t, provider, DynamicContextRequest{
+		ID:             "ctx2",
 		Runtime:        &RuntimeFacts{CWD: root},
 		WorkspaceRoots: []WorkspaceRoot{},
 	})
-	if got := bucketContents(bundle.Retained.Buckets[SlotProjectInstructions]); got != "" {
-		t.Fatalf("candidate survived root removal: %s", got)
+	if len(revoked.Candidates) != 0 {
+		t.Fatalf("candidate survived root removal: %+v", revoked.Candidates)
 	}
 }
 
-func TestConcurrentInitializeAndGetContext(t *testing.T) {
+func TestConcurrentStableAndDynamicRequests(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTS.md"), "instructions")
 	provider := NewProvider(Options{})
@@ -388,9 +622,9 @@ func TestConcurrentInitializeAndGetContext(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			if i%2 == 0 {
-				_, failure := provider.Initialize(context.Background(), ContextInitializeRequest{
-					ID:             "init",
-					Runtime:        RuntimeFacts{CWD: root},
+				_, failure := provider.GetStableContext(context.Background(), StableContextRequest{
+					ID:             "stable",
+					Runtime:        &RuntimeFacts{CWD: root},
 					WorkspaceRoots: []WorkspaceRoot{{Path: root}},
 				})
 				if failure != nil {
@@ -398,7 +632,7 @@ func TestConcurrentInitializeAndGetContext(t *testing.T) {
 				}
 				return
 			}
-			_, failure := provider.GetContext(context.Background(), ContextRequest{
+			_, failure := provider.GetDynamicContext(context.Background(), DynamicContextRequest{
 				ID:             "ctx",
 				Runtime:        &RuntimeFacts{CWD: root},
 				WorkspaceRoots: []WorkspaceRoot{{Path: root}},
@@ -415,29 +649,37 @@ func TestConcurrentInitializeAndGetContext(t *testing.T) {
 	}
 }
 
-func mustInitialize(t *testing.T, provider *Provider, req ContextInitializeRequest) *ContextBundle {
+func mustStable(t *testing.T, provider *Provider, req StableContextRequest) *ContextResponse {
 	t.Helper()
-	bundle, failure := provider.Initialize(context.Background(), req)
+	response, failure := provider.GetStableContext(context.Background(), req)
 	if failure != nil {
-		t.Fatalf("Initialize() failure = %+v", failure)
+		t.Fatalf("GetStableContext() failure = %+v", failure)
 	}
-	return bundle
+	return response
 }
 
-func mustGetContext(t *testing.T, provider *Provider, req ContextRequest) *ContextBundle {
+func mustDynamic(t *testing.T, provider *Provider, req DynamicContextRequest) *ContextResponse {
 	t.Helper()
-	bundle, failure := provider.GetContext(context.Background(), req)
+	response, failure := provider.GetDynamicContext(context.Background(), req)
 	if failure != nil {
-		t.Fatalf("GetContext() failure = %+v", failure)
+		t.Fatalf("GetDynamicContext() failure = %+v", failure)
 	}
-	return bundle
+	return response
 }
 
-func bucketContents(candidates []ContextCandidate) string {
-	return collectionContents(candidates)
+// slotContents joins the content of candidates carrying the given slot
+// convention value in their advisory metadata.
+func slotContents(response *ContextResponse, slot string) string {
+	var values []string
+	for _, candidate := range response.Candidates {
+		if value, _ := candidate.Metadata[MetadataKeySlot].(string); value == slot {
+			values = append(values, candidate.Content)
+		}
+	}
+	return strings.Join(values, "\n")
 }
 
-func collectionContents(candidates []ContextCandidate) string {
+func contents(candidates []ContextCandidate) string {
 	var values []string
 	for _, candidate := range candidates {
 		values = append(values, candidate.Content)

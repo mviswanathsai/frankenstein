@@ -12,7 +12,7 @@ import (
 )
 
 // TestPipelineHappyPath exercises the full estimate -> assemble -> prepare
-// pipeline on a realistic transcript: retained context becomes the system
+// pipeline on a realistic transcript: stable candidates become the system
 // prompt, the catalog renders tool awareness, and the transcript normalizes
 // into clean model-facing messages.
 func TestPipelineHappyPath(t *testing.T) {
@@ -34,28 +34,16 @@ func TestPipelineHappyPath(t *testing.T) {
 		t.Errorf("SystemPromptTokens = %d, want > 0", alloc.SystemPromptTokens)
 	}
 
-	// Assemble: retained context bundles plus the tool catalog.
-	bundles := []contextprovider.ContextBundle{
-		{
-			RequestID:  "bundle-1",
-			ProviderID: "provider-1",
-			Retained: contextprovider.ContextCollection{
-				Buckets: contextprovider.ContextBuckets{
-					contextprovider.SlotProjectInstructions: {
-						{ID: "pi-1", Content: "Follow the contract."},
-					},
-					contextprovider.SlotSkills: {
-						{ID: "sk-1", Content: "You know Go."},
-					},
-				},
-			},
-		},
+	// Assemble: stable candidates plus the tool catalog.
+	candidates := []contextprovider.ContextCandidate{
+		{ID: "pi-1", Metadata: slotMeta(contextprovider.SlotProjectInstructions), Content: "Follow the contract."},
+		{ID: "sk-1", Metadata: slotMeta(contextprovider.SlotSkills), Content: "You know Go."},
 	}
 	prefix, err := service.Assemble(AssembleRequest{
-		ID:             "req-assemble",
-		Model:          "claude-sonnet-4",
-		ContextBundles: bundles,
-		Catalog:        sampleCatalog(),
+		ID:               "req-assemble",
+		Model:            "claude-sonnet-4",
+		StableCandidates: candidates,
+		Catalog:          sampleCatalog(),
 	})
 	if err != nil {
 		t.Fatalf("Assemble() error = %v, want nil", err)
@@ -123,8 +111,9 @@ func TestPipelineHappyPath(t *testing.T) {
 	}
 }
 
-// TestPipelineEmptyMinimal runs the pipeline with no bundles, no catalog, and
-// a single-message transcript. Every stage must produce valid output.
+// TestPipelineEmptyMinimal runs the pipeline with no stable candidates, no
+// catalog, and a single-message transcript. Every stage must produce valid
+// output.
 func TestPipelineEmptyMinimal(t *testing.T) {
 	service := NewService()
 
@@ -225,8 +214,8 @@ func TestPipelineToolCallNormalization(t *testing.T) {
 	}
 }
 
-// TestPipelinePerCallContextInjection verifies that per-call context bundles
-// are injected into the last user message as XML blocks.
+// TestPipelinePerCallContextInjection verifies that per-call dynamic context
+// is injected into the last user message as XML blocks.
 func TestPipelinePerCallContextInjection(t *testing.T) {
 	service := NewService()
 
@@ -244,19 +233,12 @@ func TestPipelinePerCallContextInjection(t *testing.T) {
 		Transcript: []session.SessionRecord{
 			userText("What should I do next?"),
 		},
-		ContextBundles: []contextprovider.ContextBundle{
-			{
-				RequestID:  "bundle-1",
-				ProviderID: "provider-1",
-				PerCall: contextprovider.ContextCollection{
-					Buckets: contextprovider.ContextBuckets{
-						contextprovider.SlotMemory: {
-							{ID: "mem-1", Content: "Remember the plan."},
-						},
-					},
-				},
+		Dynamic: []contextprovider.ContextResponse{{
+			RequestID: "bundle-1",
+			Candidates: []contextprovider.ContextCandidate{
+				{ID: "mem-1", Metadata: slotMeta(contextprovider.SlotMemory), Content: "Remember the plan."},
 			},
-		},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("Prepare() error = %v, want nil", err)
@@ -281,10 +263,10 @@ func TestPipelineAssembleByteStable(t *testing.T) {
 	service := NewService()
 
 	req := AssembleRequest{
-		ID:             "req-assemble",
-		Model:          "claude-sonnet-4",
-		ContextBundles: sampleBundles(),
-		Catalog:        sampleCatalog(),
+		ID:               "req-assemble",
+		Model:            "claude-sonnet-4",
+		StableCandidates: sampleCandidates(),
+		Catalog:          sampleCatalog(),
 	}
 	first, err := service.Assemble(req)
 	if err != nil {
@@ -303,31 +285,26 @@ func TestPipelineAssembleByteStable(t *testing.T) {
 		rec(session.RecordToolCall, "", nil, "", []session.ToolCall{{ID: "call-1", Name: "run_shell"}}),
 		rec(session.RecordToolResult, "", strPtr("all pass"), "call-1", nil),
 	}
-	bundles := []contextprovider.ContextBundle{
-		{
-			RequestID:  "bundle-1",
-			ProviderID: "provider-1",
-			PerCall: contextprovider.ContextCollection{
-				Buckets: contextprovider.ContextBuckets{
-					contextprovider.SlotMemory: {{ID: "mem-1", Content: "Fact one."}},
-				},
-			},
+	dynamic := []contextprovider.ContextResponse{{
+		RequestID: "bundle-1",
+		Candidates: []contextprovider.ContextCandidate{
+			{ID: "mem-1", Metadata: slotMeta(contextprovider.SlotMemory), Content: "Fact one."},
 		},
-	}
+	}}
 	p1, err := service.Prepare(PrepareRequest{
-		ID:             "req-prepare",
-		Prefix:         first,
-		Transcript:     transcript,
-		ContextBundles: bundles,
+		ID:         "req-prepare",
+		Prefix:     first,
+		Transcript: transcript,
+		Dynamic:    dynamic,
 	})
 	if err != nil {
 		t.Fatalf("Prepare(first) error = %v, want nil", err)
 	}
 	p2, err := service.Prepare(PrepareRequest{
-		ID:             "req-prepare",
-		Prefix:         second,
-		Transcript:     transcript,
-		ContextBundles: bundles,
+		ID:         "req-prepare",
+		Prefix:     second,
+		Transcript: transcript,
+		Dynamic:    dynamic,
 	})
 	if err != nil {
 		t.Fatalf("Prepare(second) error = %v, want nil", err)
@@ -356,10 +333,10 @@ func TestPipelineEstimateAssembleBudget(t *testing.T) {
 	}
 
 	prefix, err := service.Assemble(AssembleRequest{
-		ID:             "req-assemble",
-		Model:          "claude-sonnet-4",
-		ContextBundles: sampleBundles(),
-		Catalog:        sampleCatalog(),
+		ID:               "req-assemble",
+		Model:            "claude-sonnet-4",
+		StableCandidates: sampleCandidates(),
+		Catalog:          sampleCatalog(),
 	})
 	if err != nil {
 		t.Fatalf("Assemble() error = %v, want nil", err)

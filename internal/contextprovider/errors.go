@@ -4,6 +4,8 @@ import "fmt"
 
 const (
 	FailureInvalidRequest               = "invalid_request"
+	FailureServiceUnavailable           = "service_unavailable"
+	FailureInternalFailure              = "internal_failure"
 	FailureInvalidRelativeWorkspaceRoot = "invalid_relative_workspace_root"
 	FailureInvalidWorkspaceRoot         = "invalid_workspace_root"
 	FailureInvalidRelativeCWD           = "invalid_relative_cwd"
@@ -15,7 +17,7 @@ const (
 	FailureNonRegularSource             = "non_regular_source"
 	FailureSourceTooLarge               = "source_too_large"
 	FailureCandidateTooLarge            = "candidate_too_large"
-	FailureBundleLimitExceeded          = "bundle_limit_exceeded"
+	FailureResponseLimitExceeded        = "response_limit_exceeded"
 	FailureCandidateCountLimitExceeded  = "candidate_count_limit_exceeded"
 	FailureTraversalLimitExceeded       = "traversal_limit_exceeded"
 	FailureSourceChangedDuringRead      = "source_changed_during_read"
@@ -26,7 +28,7 @@ const (
 type providerError struct {
 	code      string
 	message   string
-	retryable *bool
+	retryable bool
 }
 
 func (e *providerError) Error() string {
@@ -36,17 +38,39 @@ func (e *providerError) Error() string {
 	return e.message
 }
 
-func terminalFailure(requestID, providerID, code, message string) *ContextFailure {
-	return &ContextFailure{
-		RequestID:  requestID,
-		ProviderID: providerID,
-		Code:       code,
-		Message:    message,
+// retryableForCode implements read-style retryability. Deterministic
+// request-shape and limit failures report false because an identical retry
+// reproduces them; everything else — including unknown codes — reports true.
+func retryableForCode(code string) bool {
+	switch code {
+	case FailureInvalidRequest,
+		FailureInvalidRelativeWorkspaceRoot,
+		FailureInvalidWorkspaceRoot,
+		FailureInvalidRelativeCWD,
+		FailureMissingCWDForRelativePath,
+		FailureUnsupportedRefKind,
+		FailureTraversalLimitExceeded,
+		FailureCandidateTooLarge,
+		FailureResponseLimitExceeded,
+		FailureCandidateCountLimitExceeded,
+		FailureSourceTooLarge:
+		return false
+	default:
+		return true
 	}
 }
 
-func terminalFailuref(requestID, providerID, code, format string, args ...any) *ContextFailure {
-	return terminalFailure(requestID, providerID, code, fmt.Sprintf(format, args...))
+func terminalFailure(requestID, code, message string) *ContextFailure {
+	return &ContextFailure{
+		RequestID: requestID,
+		Code:      code,
+		Message:   message,
+		Retryable: retryableForCode(code),
+	}
+}
+
+func terminalFailuref(requestID, code, format string, args ...any) *ContextFailure {
+	return terminalFailure(requestID, code, fmt.Sprintf(format, args...))
 }
 
 func refFailure(refLabel, code, message string) string {

@@ -25,47 +25,79 @@ func TestCLIVersion(t *testing.T) {
 	if info.Capability != contextprovider.CapabilityName || info.ContractVersion != contextprovider.ContractVersion {
 		t.Fatalf("version info = %+v", info)
 	}
+	if info.ContractVersion != "context_provider.v0.2" {
+		t.Fatalf("contract version = %q, want context_provider.v0.2", info.ContractVersion)
+	}
 }
 
-func TestCLIInitialize(t *testing.T) {
+func TestCLIGetStableContext(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("cli instructions"), 0o644); err != nil {
 		t.Fatalf("write AGENTS.md: %v", err)
 	}
-	input := []byte(`{"id":"init","runtime":{"cwd":` + quote(root) + `},"workspace_roots":[{"path":` + quote(root) + `}]}`)
-	stdout, stderr, code := runCLI(t, input, "initialize")
+	input := []byte(`{"id":"stable","runtime":{"cwd":` + quote(root) + `},"workspace_roots":[{"path":` + quote(root) + `}]}`)
+	stdout, stderr, code := runCLI(t, input, "get-stable-context")
 	if code != 0 {
-		t.Fatalf("initialize exit = %d stderr = %s stdout = %s", code, stderr, stdout)
+		t.Fatalf("get-stable-context exit = %d stderr = %s stdout = %s", code, stderr, stdout)
 	}
-	var bundle contextprovider.ContextBundle
-	if err := json.Unmarshal(stdout, &bundle); err != nil {
-		t.Fatalf("unmarshal initialize: %v\n%s", err, stdout)
+	var response contextprovider.ContextResponse
+	if err := json.Unmarshal(stdout, &response); err != nil {
+		t.Fatalf("unmarshal get-stable-context: %v\n%s", err, stdout)
 	}
-	content := ""
-	for _, candidate := range bundle.Retained.Buckets[contextprovider.SlotProjectInstructions] {
-		content += candidate.Content
+	if len(response.Candidates) == 0 {
+		t.Fatalf("get-stable-context produced no candidates: %s", stdout)
 	}
-	if !strings.Contains(content, "cli instructions") {
-		t.Fatalf("initialize output missing instructions: %s", content)
+	slot, _ := response.Candidates[0].Metadata["slot"].(string)
+	if slot != contextprovider.SlotProjectInstructions {
+		t.Fatalf("candidates[0].metadata.slot = %q, want %q", slot, contextprovider.SlotProjectInstructions)
+	}
+	if !strings.Contains(response.Candidates[0].Content, "cli instructions") {
+		t.Fatalf("get-stable-context output missing instructions: %s", response.Candidates[0].Content)
 	}
 }
 
-func TestCLIGetContext(t *testing.T) {
+func TestCLIGetDynamicContext(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("referenced note"), 0o644); err != nil {
 		t.Fatalf("write note: %v", err)
 	}
-	input := []byte(`{"id":"ctx","runtime":{"cwd":` + quote(root) + `},"workspace_roots":[{"path":` + quote(root) + `}],"triggering_record":{"id":"rec","seq":1,"kind":"message","role":"user","text":"see ref","created_at":"2026-07-22T00:00:00Z","char_count":7,"tokens":{"value":2,"source":"char_estimate"},"refs":[{"kind":"file","target":"note.txt"}]}}`)
-	stdout, stderr, code := runCLI(t, input, "get-context")
+	input := []byte(`{"id":"ctx","runtime":{"cwd":` + quote(root) + `},"workspace_roots":[{"path":` + quote(root) + `}],"refs":[{"kind":"file","target":"note.txt"}]}`)
+	stdout, stderr, code := runCLI(t, input, "get-dynamic-context")
 	if code != 0 {
-		t.Fatalf("get-context exit = %d stderr = %s stdout = %s", code, stderr, stdout)
+		t.Fatalf("get-dynamic-context exit = %d stderr = %s stdout = %s", code, stderr, stdout)
 	}
-	var bundle contextprovider.ContextBundle
-	if err := json.Unmarshal(stdout, &bundle); err != nil {
-		t.Fatalf("unmarshal get-context: %v\n%s", err, stdout)
+	var response contextprovider.ContextResponse
+	if err := json.Unmarshal(stdout, &response); err != nil {
+		t.Fatalf("unmarshal get-dynamic-context: %v\n%s", err, stdout)
 	}
-	if len(bundle.PerCall.Referenced) != 1 || !strings.Contains(bundle.PerCall.Referenced[0].Content, "referenced note") {
-		t.Fatalf("referenced candidates = %+v", bundle.PerCall.Referenced)
+	found := false
+	for _, candidate := range response.Candidates {
+		if strings.Contains(candidate.Content, "referenced note") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("referenced candidate missing from response: %s", stdout)
+	}
+}
+
+func TestCLIInvalidRequest(t *testing.T) {
+	root := t.TempDir()
+	input := []byte(`{"id":"","runtime":{"cwd":` + quote(root) + `},"workspace_roots":[{"path":` + quote(root) + `}]}`)
+	stdout, stderr, code := runCLI(t, input, "get-stable-context")
+	if code == 0 {
+		t.Fatalf("invalid request exit = 0 stderr = %s", stderr)
+	}
+	var failure contextprovider.ContextFailure
+	if err := json.Unmarshal(stdout, &failure); err != nil {
+		t.Fatalf("unmarshal failure: %v\n%s", err, stdout)
+	}
+	if failure.Code != contextprovider.FailureInvalidRequest {
+		t.Fatalf("failure code = %q, want %q", failure.Code, contextprovider.FailureInvalidRequest)
+	}
+	if failure.Retryable {
+		t.Fatalf("invalid request failure retryable = true, want false")
 	}
 }
 
@@ -75,7 +107,7 @@ func TestCLIUsageErrors(t *testing.T) {
 		t.Fatalf("invalid command exit = %d stderr = %s", code, stderr)
 	}
 
-	_, stderr, code = runCLI(t, []byte(`{`), "initialize")
+	_, stderr, code = runCLI(t, []byte(`{`), "get-stable-context")
 	if code == 0 || !strings.Contains(stderr, "malformed json") {
 		t.Fatalf("malformed json exit = %d stderr = %s", code, stderr)
 	}

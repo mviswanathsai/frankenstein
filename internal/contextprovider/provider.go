@@ -10,22 +10,33 @@ import (
 	"sync"
 
 	"frankenstein/internal/session"
+	"frankenstein/internal/touchedpath"
 )
 
+// Provider implements the context_provider.v0.2 contract.
+//
+// The provider keeps implementation-private lifecycle state: a file cache,
+// an index of dynamically discovered sources re-offered on every dynamic
+// request, and the set of canonical paths emitted by get_stable_context.
+// The stable set enforces the stable/dynamic partition structurally:
+// material frozen at session start is never re-offered as a dynamic
+// candidate unless a caller explicitly references it.
 type Provider struct {
 	opts  Options
 	cache *fileCache
 
-	mu    sync.RWMutex
-	index map[string]sourceSpec
+	mu          sync.RWMutex
+	index       map[string]sourceSpec
+	stablePaths map[string]struct{}
 }
 
 func NewProvider(opts Options) *Provider {
 	opts = normalizeOptions(opts)
 	return &Provider{
-		opts:  opts,
-		cache: newFileCache(),
-		index: map[string]sourceSpec{},
+		opts:        opts,
+		cache:       newFileCache(),
+		index:       map[string]sourceSpec{},
+		stablePaths: map[string]struct{}{},
 	}
 }
 
@@ -37,8 +48,16 @@ func (p *Provider) Info() ContractInfo {
 	}
 }
 
-func (p *Provider) Initialize(ctx context.Context, req ContextInitializeRequest) (*ContextBundle, *ContextFailure) {
-	state, failure := p.prepare(ctx, req.ID, &req.Runtime, req.WorkspaceRoots)
+// GetStableContext returns the session's stable material: everything
+// discoverable at startup from the granted boundary — instruction files
+// along the ancestor chains of the workspace roots and cwd, identity,
+// profile, baseline memory files, and the skill index. Called once per
+// session; the caller freezes the result into renderer config.
+//
+// The canonical paths of emitted candidates are remembered as the stable
+// set. Stable finds are deliberately not published to the dynamic index.
+func (p *Provider) GetStableContext(ctx context.Context, req StableContextRequest) (*ContextResponse, *ContextFailure) {
+	state, failure := p.prepare(ctx, req.ID, req.Runtime, req.WorkspaceRoots)
 	if failure != nil {
 		return nil, failure
 	}
@@ -53,10 +72,6 @@ func (p *Provider) Initialize(ctx context.Context, req ContextInitializeRequest)
 		specs = append(specs, discovered...)
 		synthetic = append(synthetic, skillIndexes...)
 	}
-
-	refSpecs, refSynthetic := p.handleExplicitRefs(state, req.Refs, lifetimeRetained)
-	specs = append(specs, refSpecs...)
-	synthetic = append(synthetic, refSynthetic...)
 	if failure := p.failureFromError(req.ID, state.terminal); failure != nil {
 		return nil, failure
 	}
@@ -65,12 +80,33 @@ func (p *Provider) Initialize(ctx context.Context, req ContextInitializeRequest)
 	if failure != nil {
 		return nil, failure
 	}
-	bundle, indexed := buildBundle(req.ID, p.opts.ProviderID, occurrences, state.failures, p.opts)
-	p.publishIndex(indexed)
-	return bundle, nil
+	response, _, emittedPaths := buildResponse(req.ID, occurrences, state.failures, p.opts)
+
+	p.mu.Lock()
+	if p.stablePaths == nil {
+		p.stablePaths = map[string]struct{}{}
+	}
+	for _, path := range emittedPaths {
+		if path != "" {
+			p.stablePaths[path] = struct{}{}
+		}
+	}
+	p.mu.Unlock()
+
+	return response, nil
 }
 
-func (p *Provider) GetContext(ctx context.Context, req ContextRequest) (*ContextBundle, *ContextFailure) {
+// GetDynamicContext returns dynamic context candidates for the current
+// request. Discovery is strictly evidence-driven: explicit input refs are
+// dereferenced (with sibling-directory inspection), touched paths trigger
+// file, containing-directory, and parent discovery, and everything the
+// provider has dynamically found earlier in the session is re-offered from
+// its index so a diff-gated renderer sees a complete current offering.
+//
+// Discovered candidates whose source is already in the stable set are
+// omitted. Explicit input refs are never omitted: the accounting invariant
+// requires every ref to appear among some candidate's refs or in failures.
+func (p *Provider) GetDynamicContext(ctx context.Context, req DynamicContextRequest) (*ContextResponse, *ContextFailure) {
 	state, failure := p.prepare(ctx, req.ID, req.Runtime, req.WorkspaceRoots)
 	if failure != nil {
 		return nil, failure
@@ -79,26 +115,15 @@ func (p *Provider) GetContext(ctx context.Context, req ContextRequest) (*Context
 	var specs []sourceSpec
 	var synthetic []syntheticSpec
 	specs = append(specs, p.indexSpecs(state)...)
-	if cwd, ok := state.auth.authorizedCWD(state.scope); ok {
-		discovered, skillIndexes, err := discoverForCWD(state, cwd)
-		if failure := p.failureFromError(req.ID, err); failure != nil {
-			return nil, failure
-		}
-		specs = append(specs, discovered...)
-		synthetic = append(synthetic, skillIndexes...)
-	}
 
-	if req.TriggeringRecord != nil {
-		refSpecs, refSynthetic := p.handleExplicitRefs(state, req.TriggeringRecord.Refs, lifetimePerCall)
-		specs = append(specs, refSpecs...)
-		synthetic = append(synthetic, refSynthetic...)
-	}
+	refSpecs, refSynthetic := p.handleExplicitRefs(state, req.Refs)
+	specs = append(specs, refSpecs...)
+	synthetic = append(synthetic, refSynthetic...)
+
 	touchedSpecs, touchedSynthetic := p.handleTouchedPaths(state, req.TouchedPaths)
 	specs = append(specs, touchedSpecs...)
 	synthetic = append(synthetic, touchedSynthetic...)
-	if queryShaped(req.TriggeringRecord) {
-		specs = addPerCallMemoryDestinations(specs)
-	}
+
 	if failure := p.failureFromError(req.ID, state.terminal); failure != nil {
 		return nil, failure
 	}
@@ -107,33 +132,56 @@ func (p *Provider) GetContext(ctx context.Context, req ContextRequest) (*Context
 	if failure != nil {
 		return nil, failure
 	}
-	bundle, indexed := buildBundle(req.ID, p.opts.ProviderID, occurrences, state.failures, p.opts)
+	occurrences = p.omitStableCovered(occurrences)
+
+	response, indexed, _ := buildResponse(req.ID, occurrences, state.failures, p.opts)
 	p.publishIndex(indexed)
-	return bundle, nil
+	return response, nil
+}
+
+// omitStableCovered drops discovered occurrences whose canonical source path
+// was already emitted by get_stable_context. Explicit occurrences survive:
+// every input ref must be accounted for through candidate refs or failures.
+func (p *Provider) omitStableCovered(occurrences []candidateOccurrence) []candidateOccurrence {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.stablePaths) == 0 {
+		return occurrences
+	}
+	out := make([]candidateOccurrence, 0, len(occurrences))
+	for _, occ := range occurrences {
+		if occ.Path != "" && !occ.Explicit {
+			if _, stable := p.stablePaths[occ.Path]; stable {
+				continue
+			}
+		}
+		out = append(out, occ)
+	}
+	return out
 }
 
 func (p *Provider) prepare(ctx context.Context, requestID string, runtime *RuntimeFacts, roots []WorkspaceRoot) (*requestState, *ContextFailure) {
 	if strings.TrimSpace(requestID) == "" {
-		return nil, terminalFailure(requestID, p.opts.ProviderID, FailureInvalidRequest, "id is required")
+		return nil, terminalFailure(requestID, FailureInvalidRequest, "id is required")
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, terminalFailure(requestID, p.opts.ProviderID, FailureContextCanceled, err.Error())
+		return nil, terminalFailure(requestID, FailureContextCanceled, err.Error())
 	}
 	auth, err := newAuthorizer(roots)
 	if err != nil {
 		var providerErr *providerError
 		if errors.As(err, &providerErr) {
-			return nil, terminalFailure(requestID, p.opts.ProviderID, providerErr.code, providerErr.message)
+			return nil, terminalFailure(requestID, providerErr.code, providerErr.message)
 		}
-		return nil, terminalFailure(requestID, p.opts.ProviderID, FailureInvalidWorkspaceRoot, err.Error())
+		return nil, terminalFailure(requestID, FailureInvalidWorkspaceRoot, err.Error())
 	}
 	scope, err := validateRuntime(runtime)
 	if err != nil {
 		var providerErr *providerError
 		if errors.As(err, &providerErr) {
-			return nil, terminalFailure(requestID, p.opts.ProviderID, providerErr.code, providerErr.message)
+			return nil, terminalFailure(requestID, providerErr.code, providerErr.message)
 		}
-		return nil, terminalFailure(requestID, p.opts.ProviderID, FailureInvalidRequest, err.Error())
+		return nil, terminalFailure(requestID, FailureInvalidRequest, err.Error())
 	}
 	return &requestState{
 		ctx:       ctx,
@@ -149,16 +197,16 @@ func (p *Provider) failureFromError(requestID string, err error) *ContextFailure
 		return nil
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return terminalFailure(requestID, p.opts.ProviderID, FailureContextCanceled, err.Error())
+		return terminalFailure(requestID, FailureContextCanceled, err.Error())
 	}
 	var providerErr *providerError
 	if errors.As(err, &providerErr) {
-		return terminalFailure(requestID, p.opts.ProviderID, providerErr.code, providerErr.message)
+		return terminalFailure(requestID, providerErr.code, providerErr.message)
 	}
-	return terminalFailure(requestID, p.opts.ProviderID, FailureInvalidRequest, err.Error())
+	return terminalFailure(requestID, FailureInternalFailure, err.Error())
 }
 
-func (p *Provider) handleExplicitRefs(state *requestState, refs []session.ContextRef, life lifetime) ([]sourceSpec, []syntheticSpec) {
+func (p *Provider) handleExplicitRefs(state *requestState, refs []session.ContextRef) ([]sourceSpec, []syntheticSpec) {
 	var specs []sourceSpec
 	var synthetic []syntheticSpec
 	for _, ref := range refs {
@@ -183,12 +231,8 @@ func (p *Provider) handleExplicitRefs(state *requestState, refs []session.Contex
 				continue
 			}
 			classified := classifySource(resolved.canonical, sourceKindFile)
-			destinations := []destination{referencedDestination(life, priorityExplicitRef, true, label)}
-			if classified.Recognized {
-				semanticPriority := priorityForSlot(classified.Slot, priorityInstructionsIdentity)
-				destinations = append(destinations, retainedDestination(classified.Slot, semanticPriority, false, ""))
-			}
-			spec := makeFileSpec(state, resolved.canonical, sourceKindFile, "explicit_ref", classified, destinations, classified.Recognized)
+			dest := newDestination(classified.Slot, priorityExplicitRef, true, label)
+			spec := makeFileSpec(state, resolved.canonical, sourceKindFile, "explicit_ref", classified, []destination{dest}, classified.Recognized)
 			if len(spec) > 0 {
 				spec[0].Optional = false
 				spec[0].Refs = []session.ContextRef{ref}
@@ -213,7 +257,7 @@ func (p *Provider) handleExplicitRefs(state *requestState, refs []session.Contex
 				state.addFailure(refFailuref(label, FailureNonRegularSource, "expected directory: %s", resolved.canonical))
 				continue
 			}
-			synthetic = append(synthetic, directoryReferencedCandidate(state, resolved.canonical, ref, life))
+			synthetic = append(synthetic, directoryReferencedCandidate(state, resolved.canonical, ref))
 			dirSpecs, dirSynthetic, err := discoverDirectory(state, resolved.canonical, priorityOptionalDiscovered)
 			if err == nil {
 				specs = append(specs, dirSpecs...)
@@ -226,7 +270,7 @@ func (p *Provider) handleExplicitRefs(state *requestState, refs []session.Contex
 	return specs, synthetic
 }
 
-func (p *Provider) handleTouchedPaths(state *requestState, touched []TouchedPath) ([]sourceSpec, []syntheticSpec) {
+func (p *Provider) handleTouchedPaths(state *requestState, touched []touchedpath.TouchedPath) ([]sourceSpec, []syntheticSpec) {
 	var specs []sourceSpec
 	var synthetic []syntheticSpec
 	for _, touchedPath := range touched {
@@ -235,19 +279,18 @@ func (p *Provider) handleTouchedPaths(state *requestState, touched []TouchedPath
 		}
 		resolved := state.auth.resolveInput(touchedPath.Path, state.scope)
 		if resolved.err != nil {
-			if resolved.code == FailureMissingCWDForRelativePath {
-				continue
-			}
 			continue
 		}
 		if resolved.exists {
 			if resolved.isFile {
 				classified := classifySource(resolved.canonical, sourceKindFile)
-				dest := perCallDestination(SlotUnknown, priorityDirectTouched, false, "")
+				var dest destination
 				indexable := false
 				if classified.Recognized {
-					dest = retainedDestination(classified.Slot, priorityForSlot(classified.Slot, priorityDirectTouched), false, "")
+					dest = newDestination(classified.Slot, priorityForSlot(classified.Slot, priorityDirectTouched), false, "")
 					indexable = true
+				} else {
+					dest = newDestination(SlotUnknown, priorityDirectTouched, false, "")
 				}
 				specs = append(specs, makeFileSpec(state, resolved.canonical, sourceKindFile, "touched_path", classified, []destination{dest}, indexable)...)
 				siblingSpecs, siblingSynthetic, err := inspectContainingDirectory(state, resolved.canonical)
@@ -286,12 +329,11 @@ func (p *Provider) processAll(ctx context.Context, state *requestState, specs []
 			continue
 		}
 		occurrences = append(occurrences, candidateOccurrence{
-			Candidate:   spec.Candidate,
-			Destination: spec.Destination,
-			Priority:    spec.Destination.Priority,
-			Order:       spec.Order,
-			Explicit:    spec.Destination.Explicit,
-			RefLabel:    spec.Destination.RefLabel,
+			Candidate: spec.Candidate,
+			Priority:  spec.Destination.Priority,
+			Order:     spec.Order,
+			Explicit:  spec.Destination.Explicit,
+			RefLabel:  spec.Destination.RefLabel,
 		})
 	}
 
@@ -343,7 +385,7 @@ func (p *Provider) processSources(ctx context.Context, state *requestState, spec
 	for result := range results {
 		if result.err != nil {
 			if result.code == FailureContextCanceled {
-				return nil, terminalFailure(state.requestID, p.opts.ProviderID, FailureContextCanceled, result.err.Error())
+				return nil, terminalFailure(state.requestID, FailureContextCanceled, result.err.Error())
 			}
 			for _, dest := range result.spec.Destinations {
 				if dest.Explicit {
@@ -384,19 +426,20 @@ func (p *Provider) processSource(ctx context.Context, spec sourceSpec) sourcePro
 			refs = []session.ContextRef{sourceRef(spec.Path, spec.Label)}
 		}
 		candidate := ContextCandidate{
-			ID:      fileCandidateID(p.opts.ProviderID, dest, spec),
-			Content: content,
-			Refs:    refs,
+			ID:       fileCandidateID(p.opts.ProviderID, dest.Slot, spec.Path),
+			Metadata: slotMetadata(dest.Slot),
+			Content:  content,
+			Refs:     refs,
 		}
 		specCopy := spec
 		occurrences = append(occurrences, candidateOccurrence{
-			Candidate:   candidate,
-			Destination: dest,
-			Priority:    dest.Priority,
-			Order:       spec.Order,
-			Explicit:    dest.Explicit && dest.Referenced,
-			RefLabel:    dest.RefLabel,
-			IndexSpec:   &specCopy,
+			Candidate: candidate,
+			Path:      spec.Path,
+			Priority:  dest.Priority,
+			Order:     spec.Order,
+			Explicit:  dest.Explicit,
+			RefLabel:  dest.RefLabel,
+			IndexSpec: &specCopy,
 		})
 	}
 	return sourceProcessResult{spec: spec, occurrences: occurrences}
@@ -464,7 +507,7 @@ func (p *Provider) indexSpecs(state *requestState) []sourceSpec {
 	return out
 }
 
-func directoryReferencedCandidate(state *requestState, path string, ref session.ContextRef, life lifetime) syntheticSpec {
+func directoryReferencedCandidate(state *requestState, path string, ref session.ContextRef) syntheticSpec {
 	entries, _ := os.ReadDir(path)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	var lines []string
@@ -483,12 +526,13 @@ func directoryReferencedCandidate(state *requestState, path string, ref session.
 	}
 	header := fmt.Sprintf("## Directory reference\nSource: %s\n\n", path)
 	content, _ := composeLimitedContent(header, strings.Join(lines, "\n"), truncationMarker(path), false, state.opts.MaxCandidateContentBytes)
-	dest := referencedDestination(life, priorityExplicitRef, true, refLabel(ref))
+	dest := newDestination(SlotUnknown, priorityExplicitRef, true, refLabel(ref))
 	return syntheticSpec{
 		Candidate: ContextCandidate{
-			ID:      syntheticCandidateID(state.opts.ProviderID, dest, path),
-			Content: content,
-			Refs:    []session.ContextRef{ref},
+			ID:       syntheticCandidateID(state.opts.ProviderID, SlotUnknown, path),
+			Metadata: slotMetadata(SlotUnknown),
+			Content:  content,
+			Refs:     []session.ContextRef{ref},
 		},
 		Destination: dest,
 		Order:       state.nextOrder(),
@@ -504,7 +548,7 @@ func cloneRefs(refs []session.ContextRef) []session.ContextRef {
 	return out
 }
 
-func priorityForSlot(slot ContextSlot, fallback int) int {
+func priorityForSlot(slot string, fallback int) int {
 	switch slot {
 	case SlotIdentity, SlotProjectInstructions:
 		return priorityInstructionsIdentity
@@ -517,31 +561,4 @@ func priorityForSlot(slot ContextSlot, fallback int) int {
 	default:
 		return fallback
 	}
-}
-
-func queryShaped(record *session.SessionRecord) bool {
-	if record == nil {
-		return false
-	}
-	if record.Text == nil {
-		return false
-	}
-	text := strings.TrimSpace(*record.Text)
-	if text == "" {
-		return false
-	}
-	return strings.Contains(text, "?")
-}
-
-func addPerCallMemoryDestinations(specs []sourceSpec) []sourceSpec {
-	out := make([]sourceSpec, len(specs))
-	copy(out, specs)
-	for i := range out {
-		classified := classifySource(out[i].Path, out[i].Kind)
-		if classified.Slot != SlotMemory {
-			continue
-		}
-		out[i].Destinations = append(out[i].Destinations, perCallDestination(SlotMemory, priorityProfileMemory, false, ""))
-	}
-	return out
 }

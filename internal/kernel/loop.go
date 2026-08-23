@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
+	"os"
+	"strings"
 
 	"frankenstein/internal/contextbuilder"
 	"frankenstein/internal/contextprovider"
@@ -13,7 +14,10 @@ import (
 	"frankenstein/internal/toolinvocation"
 )
 
-const builtPrefixKey = "built_prefix"
+const (
+	builtPrefixKey   = "built_prefix"
+	stableContextKey = "stable_context"
+)
 
 // runTurn executes one full turn: session create/get, setup sequence,
 // inner loop, and teardown. On new sessions, sessionID is empty and the
@@ -63,34 +67,35 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 	// --- Setup or reuse cached prefix ---
 	cachedPrefix, hasCached := loadBuiltPrefix(sess)
 	var builtPrefix contextbuilder.BuiltPrefix
-	var bundles []contextprovider.ContextBundle
+	var dynamic *contextprovider.ContextResponse
 	var catalog toolinvocation.ToolCatalog
+
+	// Dynamic context is needed by the inner loop on every path.
+	dynamic, err = k.getDynamicWithRetry(ctx, sessionID)
+	if err != nil {
+		return sessionID, err
+	}
 
 	if hasCached {
 		builtPrefix = cachedPrefix
 
-		// Still need catalog and context for the inner loop.
-		var err error
+		// Still need the catalog for the inner loop.
 		catalog, err = k.listToolsWithRetry(ctx, sessionID)
 		if err != nil {
 			return sessionID, err
 		}
-		bundles, err = k.getContextWithRetry(ctx, sessionID, isNew)
-		if err != nil {
-			return sessionID, err
-		}
 	} else {
-		catalog, err := k.listToolsWithRetry(ctx, sessionID)
+		catalog, err = k.listToolsWithRetry(ctx, sessionID)
 		if err != nil {
 			return sessionID, err
 		}
 
-		bundles, err := k.getContextWithRetry(ctx, sessionID, isNew)
+		stable, err := k.ensureStableContext(ctx, sessionID, sess)
 		if err != nil {
 			return sessionID, err
 		}
 
-		builtPrefix, err := k.assembleWithRetry(ctx, sessionID, model, bundles, catalog)
+		builtPrefix, err = k.assembleWithRetry(ctx, sessionID, model, stable.Candidates, catalog)
 		if err != nil {
 			return sessionID, err
 		}
@@ -109,7 +114,7 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 	// --- Inner loop ---
 	result := runInnerLoop(ctx, k.cfg, k.tools, k.model, k.builder, k.observer,
 		sessionID, k.turnID, model, builtPrefix,
-		transcript.Records, &catalog, bundles,
+		transcript.Records, &catalog, []contextprovider.ContextResponse{*dynamic},
 	)
 
 	// --- Append accumulated records ---
@@ -208,6 +213,61 @@ func (k *Kernel) storeBuiltPrefix(ctx context.Context, sessionID string, sess *s
 	return err
 }
 
+// loadStableContext returns the frozen stable response from session metadata,
+// if any. The stable response survives process restarts the same way the
+// built prefix does.
+func loadStableContext(sess *session.Session) (*contextprovider.ContextResponse, bool) {
+	raw, ok := sess.Metadata.Custom[stableContextKey]
+	if !ok {
+		return nil, false
+	}
+	var response contextprovider.ContextResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, false
+	}
+	return &response, true
+}
+
+// ensureStableContext returns the frozen stable response for the session,
+// fetching and storing it once if it is not already present. Resumed sessions
+// without a stored stable response (for example, sessions created before this
+// key existed) fetch a fresh one here.
+func (k *Kernel) ensureStableContext(ctx context.Context, sessionID string, sess *session.Session) (*contextprovider.ContextResponse, error) {
+	if resp, ok := loadStableContext(sess); ok {
+		return resp, nil
+	}
+	resp, err := k.getStableWithRetry(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := k.storeStableContext(ctx, sessionID, sess, resp); err != nil {
+		return nil, fmt.Errorf("store stable context: %w", err)
+	}
+	return resp, nil
+}
+
+// storeStableContext writes the stable response into session metadata using
+// the same full-replacement pattern as storeBuiltPrefix. Both helpers mutate
+// the same in-memory session object, so keys written by one remain visible
+// to the other.
+func (k *Kernel) storeStableContext(ctx context.Context, sessionID string, sess *session.Session, resp *contextprovider.ContextResponse) error {
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshal stable context: %w", err)
+	}
+	metadata := sess.Metadata
+	if metadata.Custom == nil {
+		metadata.Custom = make(map[string]json.RawMessage)
+	}
+	metadata.Custom[stableContextKey] = raw
+	sess.Metadata = metadata
+	_, err = k.session.SetMetadata(ctx, session.SetMetadataInput{
+		SessionID: sessionID,
+		Metadata:  metadata,
+	})
+	return err
+}
+
 // --- Setup helpers with retry ---
 
 func (k *Kernel) listToolsWithRetry(ctx context.Context, sessionID string) (toolinvocation.ToolCatalog, error) {
@@ -229,46 +289,71 @@ func (k *Kernel) listToolsWithRetry(ctx context.Context, sessionID string) (tool
 	return toolinvocation.ToolCatalog{}, fmt.Errorf("list_tools failed: %v", lastFailure)
 }
 
-func (k *Kernel) getContextWithRetry(ctx context.Context, sessionID string, isNew bool) ([]contextprovider.ContextBundle, error) {
+// kernelWorkspaceScope resolves the workspace scope the kernel grants to
+// context-provider calls: the process working directory as both the single
+// granted root and runtime.cwd. When the working directory cannot be
+// resolved, the scope is empty — roots are required by the contract but may
+// be empty, granting no filesystem access.
+func kernelWorkspaceScope() ([]contextprovider.WorkspaceRoot, *contextprovider.RuntimeFacts) {
+	wd, err := os.Getwd()
+	if err != nil || strings.TrimSpace(wd) == "" {
+		return []contextprovider.WorkspaceRoot{}, nil
+	}
+	return []contextprovider.WorkspaceRoot{{Path: wd}}, &contextprovider.RuntimeFacts{CWD: wd}
+}
+
+func (k *Kernel) getStableWithRetry(ctx context.Context, sessionID string) (*contextprovider.ContextResponse, error) {
+	roots, runtime := kernelWorkspaceScope()
 	var lastFailure *contextprovider.ContextFailure
 	for attempt := 0; attempt < 3; attempt++ {
-		var bundle *contextprovider.ContextBundle
-		var failure *contextprovider.ContextFailure
-
-		if isNew {
-			bundle, failure = k.ctxProv.Initialize(ctx, contextprovider.ContextInitializeRequest{
-				ID:        "ctx_" + k.turnID,
-				SessionID: sessionID,
-				Runtime: contextprovider.RuntimeFacts{
-					CurrentDate: time.Now().UTC().Format(time.RFC3339),
-				},
-			})
-		} else {
-			bundle, failure = k.ctxProv.GetContext(ctx, contextprovider.ContextRequest{
-				ID:        "ctx_" + k.turnID,
-				SessionID: sessionID,
-			})
-		}
+		response, failure := k.ctxProv.GetStableContext(ctx, contextprovider.StableContextRequest{
+			ID:             "sctx_" + k.turnID,
+			SessionID:      sessionID,
+			Runtime:        runtime,
+			WorkspaceRoots: roots,
+		})
 		if failure == nil {
-			return []contextprovider.ContextBundle{*bundle}, nil
+			return response, nil
 		}
 		lastFailure = failure
-		if failure.Retryable != nil && !*failure.Retryable {
+		if !failure.Retryable {
 			break
 		}
 	}
-	return nil, fmt.Errorf("get_context failed: %v", lastFailure)
+	return nil, fmt.Errorf("get_stable_context failed: %v", lastFailure)
 }
 
-func (k *Kernel) assembleWithRetry(ctx context.Context, sessionID, model string, bundles []contextprovider.ContextBundle, catalog toolinvocation.ToolCatalog) (contextbuilder.BuiltPrefix, error) {
+func (k *Kernel) getDynamicWithRetry(ctx context.Context, sessionID string) (*contextprovider.ContextResponse, error) {
+	roots, runtime := kernelWorkspaceScope()
+	var lastFailure *contextprovider.ContextFailure
+	for attempt := 0; attempt < 3; attempt++ {
+		response, failure := k.ctxProv.GetDynamicContext(ctx, contextprovider.DynamicContextRequest{
+			ID:             "ctx_" + k.turnID,
+			SessionID:      sessionID,
+			Reason:         "user_message",
+			Runtime:        runtime,
+			WorkspaceRoots: roots,
+		})
+		if failure == nil {
+			return response, nil
+		}
+		lastFailure = failure
+		if !failure.Retryable {
+			break
+		}
+	}
+	return nil, fmt.Errorf("get_dynamic_context failed: %v", lastFailure)
+}
+
+func (k *Kernel) assembleWithRetry(ctx context.Context, sessionID, model string, stableCandidates []contextprovider.ContextCandidate, catalog toolinvocation.ToolCatalog) (contextbuilder.BuiltPrefix, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		prefix, err := k.builder.Assemble(contextbuilder.AssembleRequest{
-			ID:             "asm_" + k.turnID,
-			SessionID:      sessionID,
-			Model:          model,
-			ContextBundles: bundles,
-			Catalog:        &catalog,
+			ID:               "asm_" + k.turnID,
+			SessionID:        sessionID,
+			Model:            model,
+			StableCandidates: stableCandidates,
+			Catalog:          &catalog,
 		})
 		if err == nil {
 			return prefix, nil

@@ -3,8 +3,8 @@ package toolinvocation
 import (
 	"encoding/json"
 
-	"frankenstein/internal/contextprovider"
 	"frankenstein/internal/session"
+	"frankenstein/internal/touchedpath"
 )
 
 const (
@@ -126,17 +126,17 @@ type ToolFailure struct {
 }
 
 type ToolResult struct {
-	CallID        string                        `json:"call_id"`
-	ToolID        string                        `json:"tool_id,omitempty"`
-	Name          string                        `json:"name"`
-	Status        ToolResultStatus              `json:"status"`
-	Text          string                        `json:"text"`
-	Refs          []session.ContextRef          `json:"refs"`
-	TouchedPaths  []contextprovider.TouchedPath `json:"touched_paths"`
-	SideEffect    ToolSideEffect                `json:"side_effect"`
-	StopRequested bool                          `json:"stop_requested,omitempty"`
-	Failure       *ToolFailure                  `json:"failure,omitempty"`
-	DescribedTool *ToolDefinition               `json:"described_tool,omitempty"`
+	CallID        string                    `json:"call_id"`
+	ToolID        string                    `json:"tool_id,omitempty"`
+	Name          string                    `json:"name"`
+	Status        ToolResultStatus          `json:"status"`
+	Text          string                    `json:"text"`
+	Refs          []session.ContextRef      `json:"refs"`
+	TouchedPaths  []touchedpath.TouchedPath `json:"touched_paths"`
+	SideEffect    ToolSideEffect            `json:"side_effect"`
+	StopRequested bool                      `json:"stop_requested,omitempty"`
+	Failure       *ToolFailure              `json:"failure,omitempty"`
+	DescribedTool *ToolDefinition           `json:"described_tool,omitempty"`
 }
 
 type ToolCallStarted struct {

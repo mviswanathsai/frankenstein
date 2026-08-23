@@ -17,7 +17,7 @@ const (
 )
 
 type classification struct {
-	Slot       ContextSlot
+	Slot       string
 	Recognized bool
 }
 

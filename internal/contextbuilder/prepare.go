@@ -26,7 +26,7 @@ func (s *Service) Prepare(req PrepareRequest) (BuiltContext, error) {
 	notes := []NormalizationNote{}
 	normalized, notes := normalizeTranscript(req.Transcript, notes)
 	msgs, notes := repairBrokenTurns(normalized, notes)
-	injectPerCallContext(msgs, req.ContextBundles)
+	injectPerCallContext(msgs, req.Dynamic)
 
 	return BuiltContext{
 		Input: modelinvocation.ModelInput{
@@ -237,16 +237,16 @@ func answeredIDs(nmsgs []normalizedMsg) map[string]struct{} {
 	return answered
 }
 
-// injectPerCallContext appends the per-call context of every bundle to the
-// last user-role message. Bundles are processed in request order; slots are
-// sorted by name so the appended text is deterministic. If there is no user
-// message, nothing is injected.
-func injectPerCallContext(msgs []modelinvocation.ModelMessage, bundles []contextprovider.ContextBundle) {
+// injectPerCallContext appends the per-call context of every dynamic response
+// to the last user-role message. Responses are processed in request order;
+// slot groups are sorted by name within each response so the appended text is
+// deterministic. If there is no user message, nothing is injected.
+func injectPerCallContext(msgs []modelinvocation.ModelMessage, responses []contextprovider.ContextResponse) {
 	idx := lastUserIndex(msgs)
 	if idx < 0 {
 		return
 	}
-	blocks := perCallBlocks(bundles)
+	blocks := perCallBlocks(responses)
 	if blocks == "" {
 		return
 	}
@@ -267,19 +267,19 @@ func lastUserIndex(msgs []modelinvocation.ModelMessage) int {
 	return -1
 }
 
-// perCallBlocks renders the per-call context of all bundles as XML-delimited
-// blocks, one wrapper per slot with its candidates inside:
+// perCallBlocks renders the per-call context of all responses as XML-delimited
+// blocks, one wrapper per slot group with its candidates inside:
 //
 //	<per_call_context slot="memory">
 //	<candidate id="abc123">...content...</candidate>
 //	</per_call_context>
 //
-// Bundle order is preserved; slot order within a bundle is alphabetical.
-func perCallBlocks(bundles []contextprovider.ContextBundle) string {
+// Response order is preserved; slot order within a response is alphabetical.
+func perCallBlocks(responses []contextprovider.ContextResponse) string {
 	var sb strings.Builder
 	first := true
-	for _, bundle := range bundles {
-		for _, block := range perCallBlocksForBuckets(bundle.PerCall.Buckets) {
+	for _, resp := range responses {
+		for _, block := range perCallBlocksForCandidates(resp.Candidates) {
 			if !first {
 				sb.WriteByte('\n')
 			}
@@ -290,25 +290,29 @@ func perCallBlocks(bundles []contextprovider.ContextBundle) string {
 	return sb.String()
 }
 
-// perCallBlocksForBuckets renders one XML block per non-empty slot.
-func perCallBlocksForBuckets(buckets contextprovider.ContextBuckets) []string {
-	slots := make([]contextprovider.ContextSlot, 0, len(buckets))
-	for slot := range buckets {
-		slots = append(slots, slot)
+// perCallBlocksForCandidates renders one XML block per slot group, using the
+// same grouping rule as assemble (absent or empty slot metadata groups under
+// "context").
+func perCallBlocksForCandidates(candidates []contextprovider.ContextCandidate) []string {
+	groups := make(map[string][]contextprovider.ContextCandidate)
+	for _, c := range candidates {
+		name := candidateSlot(c)
+		groups[name] = append(groups[name], c)
 	}
-	slices.SortFunc(slots, func(a, b contextprovider.ContextSlot) int {
-		return strings.Compare(string(a), string(b))
+
+	names := make([]string, 0, len(groups))
+	for name := range groups {
+		names = append(names, name)
+	}
+	slices.SortFunc(names, func(a, b string) int {
+		return strings.Compare(a, b)
 	})
 
-	blocks := make([]string, 0, len(slots))
-	for _, slot := range slots {
-		candidates := buckets[slot]
-		if len(candidates) == 0 {
-			continue
-		}
+	blocks := make([]string, 0, len(names))
+	for _, name := range names {
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "<per_call_context slot=\"%s\">\n", slot)
-		for _, c := range candidates {
+		fmt.Fprintf(&sb, "<per_call_context slot=\"%s\">\n", name)
+		for _, c := range groups[name] {
 			fmt.Fprintf(&sb, "<candidate id=\"%s\">%s</candidate>\n", c.ID, c.Content)
 		}
 		sb.WriteString("</per_call_context>")

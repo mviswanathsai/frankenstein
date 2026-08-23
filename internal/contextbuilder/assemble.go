@@ -36,9 +36,9 @@ const assembleTemplateText = `You are a helpful assistant.{{- range .Slots}}
 // once at init because the source is a constant; execution is deterministic.
 var assembleTemplate = template.Must(template.New("system_prompt").Parse(assembleTemplateText))
 
-// assembleData is the template-friendly view of an AssembleRequest. Map
-// buckets are pre-processed into ordered slices so template iteration is
-// deterministic.
+// assembleData is the template-friendly view of an AssembleRequest. Stable
+// candidates are pre-processed into ordered slot groups so template iteration
+// is deterministic.
 type assembleData struct {
 	Model string
 	Tools []toolDefStub
@@ -52,15 +52,15 @@ type toolDefStub struct {
 	Description string
 }
 
-// slotGroup is one retained context slot and its candidates, ready for the
-// template. Name is the raw ContextSlot string used as the XML tag.
+// slotGroup is one context slot group and its candidates, ready for the
+// template. Name is the slot group name used as the XML tag.
 type slotGroup struct {
 	Name  string
 	Items []contextprovider.ContextCandidate
 }
 
-// Assemble builds the byte-stable system prompt from context bundles and the
-// tool catalog. Identical inputs produce an identical BuiltPrefix.
+// Assemble builds the byte-stable system prompt from stable candidates and
+// the tool catalog. Identical inputs produce an identical BuiltPrefix.
 func (s *Service) Assemble(req AssembleRequest) (BuiltPrefix, error) {
 	if req.Model == "" {
 		return BuiltPrefix{}, invalidRequest(req.ID, "model is required")
@@ -68,7 +68,7 @@ func (s *Service) Assemble(req AssembleRequest) (BuiltPrefix, error) {
 
 	data := assembleData{
 		Model: req.Model,
-		Slots: collectSlots(req.ContextBundles),
+		Slots: collectSlots(req.StableCandidates),
 	}
 	if req.Catalog != nil {
 		data.Tools = toolStubs(req.Catalog)
@@ -88,25 +88,21 @@ func (s *Service) Assemble(req AssembleRequest) (BuiltPrefix, error) {
 	}, nil
 }
 
-// collectSlots merges retained candidates from all bundles, grouped by slot.
-// Candidates keep their order within each bundle; bundles are processed in
-// request order. Slots are returned sorted alphabetically by name so the
-// rendered prompt is deterministic despite map iteration order. Empty buckets
-// contribute nothing.
-func collectSlots(bundles []contextprovider.ContextBundle) []slotGroup {
+// collectSlots groups stable candidates by their advisory slot metadata.
+// Candidates keep their input order within each group; groups are returned
+// sorted alphabetically by name so the rendered prompt is deterministic
+// despite map iteration order. Candidates without a slot metadata value group
+// under "context".
+func collectSlots(candidates []contextprovider.ContextCandidate) []slotGroup {
 	groups := make(map[string]*slotGroup)
-	for _, bundle := range bundles {
-		for slot, candidates := range bundle.Retained.Buckets {
-			if len(candidates) == 0 {
-				continue
-			}
-			group := groups[string(slot)]
-			if group == nil {
-				group = &slotGroup{Name: string(slot)}
-				groups[string(slot)] = group
-			}
-			group.Items = append(group.Items, candidates...)
+	for _, c := range candidates {
+		name := candidateSlot(c)
+		group := groups[name]
+		if group == nil {
+			group = &slotGroup{Name: name}
+			groups[name] = group
 		}
+		group.Items = append(group.Items, c)
 	}
 
 	slots := make([]slotGroup, 0, len(groups))
@@ -117,6 +113,17 @@ func collectSlots(bundles []contextprovider.ContextBundle) []slotGroup {
 		return strings.Compare(a.Name, b.Name)
 	})
 	return slots
+}
+
+// candidateSlot returns the group name a candidate renders under. The slot
+// convention rides in advisory metadata under MetadataKeySlot as a plain
+// string; an absent, empty, or non-string value groups under "context".
+func candidateSlot(c contextprovider.ContextCandidate) string {
+	slot, _ := c.Metadata[contextprovider.MetadataKeySlot].(string)
+	if slot == "" {
+		return "context"
+	}
+	return slot
 }
 
 // toolStubs derives the template's tool-awareness text from the catalog,

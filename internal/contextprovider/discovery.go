@@ -101,7 +101,7 @@ func discoverDirectory(state *requestState, dir string, priority int) ([]sourceS
 				continue
 			}
 			specs = append(specs, makeFileSpec(state, canonical, sourceKindFile, "ordinary", classified, []destination{
-				retainedDestination(classified.Slot, priority, false, ""),
+				newDestination(classified.Slot, priority, false, ""),
 			}, true)...)
 		}
 	}
@@ -130,7 +130,7 @@ func discoverCodexDirectory(state *requestState, dir string, fallbacks []string)
 		}
 		classified := classifySource(canonical, sourceKindFile)
 		return makeFileSpec(state, canonical, sourceKindFile, "codex", classified, []destination{
-			retainedDestination(classified.Slot, priorityInstructionsIdentity, false, ""),
+			newDestination(classified.Slot, priorityInstructionsIdentity, false, ""),
 		}, true)
 	}
 	return nil
@@ -146,7 +146,7 @@ func discoverClaudeDirectory(state *requestState, dir string) []sourceSpec {
 		}
 		classified := classification{Slot: SlotProjectInstructions, Recognized: true}
 		specs = append(specs, makeFileSpec(state, canonical, sourceKindFile, "claude", classified, []destination{
-			retainedDestination(SlotProjectInstructions, priorityNativeRules, false, ""),
+			newDestination(SlotProjectInstructions, priorityNativeRules, false, ""),
 		}, true)...)
 		specs = append(specs, discoverClaudeImports(state, canonical, 0)...)
 	}
@@ -168,7 +168,7 @@ func discoverCursorDirectory(state *requestState, dir string) []sourceSpec {
 		}
 		classified := classifySource(canonical, sourceKindFile)
 		specs = append(specs, makeFileSpec(state, canonical, sourceKindFile, "cursor", classified, []destination{
-			retainedDestination(classified.Slot, priorityNativeRules, false, ""),
+			newDestination(classified.Slot, priorityNativeRules, false, ""),
 		}, true)...)
 	}
 	rulesDir := filepath.Join(dir, ".cursor", "rules")
@@ -193,7 +193,7 @@ func discoverHermesDirectory(state *requestState, dir string) []sourceSpec {
 			priority = priorityProfileMemory
 		}
 		specs = append(specs, makeFileSpec(state, canonical, sourceKindFile, "hermes", classified, []destination{
-			retainedDestination(classified.Slot, priority, false, ""),
+			newDestination(classified.Slot, priority, false, ""),
 		}, true)...)
 	}
 	specs = append(specs, discoverCursorRules(state, filepath.Join(dir, ".cursor", "rules"))...)
@@ -237,7 +237,7 @@ func discoverCursorRules(state *requestState, rulesDir string) []sourceSpec {
 		}
 		classified := classification{Slot: SlotProjectInstructions, Recognized: true}
 		specs = append(specs, makeFileSpec(state, fileCanonical, sourceKindCursorRule, "cursor", classified, []destination{
-			retainedDestination(SlotProjectInstructions, priorityNativeRules, false, ""),
+			newDestination(SlotProjectInstructions, priorityNativeRules, false, ""),
 		}, true)...)
 	}
 	return specs
@@ -281,7 +281,7 @@ func discoverMarkdownTree(state *requestState, root string, kind sourceKind, ada
 			}
 			classified := classification{Slot: SlotProjectInstructions, Recognized: true}
 			specs = append(specs, makeFileSpec(state, canonical, kind, adapter, classified, []destination{
-				retainedDestination(SlotProjectInstructions, priorityNativeRules, false, ""),
+				newDestination(SlotProjectInstructions, priorityNativeRules, false, ""),
 			}, true)...)
 		}
 	}
@@ -312,7 +312,7 @@ func discoverClaudeImports(state *requestState, sourcePath string, depth int) []
 			classified = classification{Slot: SlotProjectInstructions, Recognized: true}
 		}
 		specs = append(specs, makeFileSpec(state, canonical, sourceKindFile, "claude_import", classified, []destination{
-			retainedDestination(classified.Slot, priorityNativeRules, false, ""),
+			newDestination(classified.Slot, priorityNativeRules, false, ""),
 		}, true)...)
 		specs = append(specs, discoverClaudeImports(state, canonical, depth+1)...)
 	}
@@ -425,10 +425,11 @@ func discoverSkillIndexes(state *requestState, dirs []string) []syntheticSpec {
 	body := strings.Join(lines, "\n")
 	header := "## Skills index\n\n"
 	content, _ := composeLimitedContent(header, body, "\n\n[TRUNCATED: skills index exceeds candidate content limit; content is incomplete.]\n", false, state.opts.MaxCandidateContentBytes)
-	dest := retainedDestination(SlotSkills, prioritySkillIndex, false, "")
+	dest := newDestination(SlotSkills, prioritySkillIndex, false, "")
 	candidate := ContextCandidate{
-		ID:      syntheticCandidateID(state.opts.ProviderID, dest, "skills-index"),
-		Content: content,
+		ID:       syntheticCandidateID(state.opts.ProviderID, SlotSkills, "skills-index"),
+		Metadata: slotMetadata(SlotSkills),
+		Content:  content,
 	}
 	return []syntheticSpec{{
 		Candidate:   candidate,
@@ -589,24 +590,6 @@ func makeFileSpec(state *requestState, path string, kind sourceKind, adapter str
 		Order:        state.nextOrder(),
 	}
 	return []sourceSpec{spec}
-}
-
-func retainedDestination(slot ContextSlot, priority int, explicit bool, label string) destination {
-	if slot == "" {
-		slot = SlotUnknown
-	}
-	return destination{Lifetime: lifetimeRetained, Slot: slot, Priority: priority, Explicit: explicit, RefLabel: label}
-}
-
-func perCallDestination(slot ContextSlot, priority int, explicit bool, label string) destination {
-	if slot == "" {
-		slot = SlotUnknown
-	}
-	return destination{Lifetime: lifetimePerCall, Slot: slot, Priority: priority, Explicit: explicit, RefLabel: label}
-}
-
-func referencedDestination(life lifetime, priority int, explicit bool, label string) destination {
-	return destination{Lifetime: life, Slot: SlotUnknown, Referenced: true, Priority: priority, Explicit: explicit, RefLabel: label}
 }
 
 func dirsBetween(root, cwd string) []string {

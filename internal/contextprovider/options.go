@@ -5,7 +5,7 @@ import "runtime"
 const (
 	DefaultMaxSourceReadBytes       int64 = 1 << 20
 	DefaultMaxCandidateContentBytes int64 = 512 << 10
-	DefaultMaxBundleContentBytes    int64 = 4 << 20
+	DefaultMaxResponseContentBytes  int64 = 4 << 20
 	DefaultMaxCandidates            int   = 256
 	DefaultMaxInspectedDirEntries   int   = 20_000
 )
@@ -15,7 +15,7 @@ type Options struct {
 
 	MaxSourceReadBytes       int64
 	MaxCandidateContentBytes int64
-	MaxBundleContentBytes    int64
+	MaxResponseContentBytes  int64
 	MaxCandidates            int
 	MaxInspectedDirEntries   int
 	MaxConcurrentReads       int
@@ -33,7 +33,7 @@ func DefaultOptions() Options {
 		ProviderID:               DefaultProviderID,
 		MaxSourceReadBytes:       DefaultMaxSourceReadBytes,
 		MaxCandidateContentBytes: DefaultMaxCandidateContentBytes,
-		MaxBundleContentBytes:    DefaultMaxBundleContentBytes,
+		MaxResponseContentBytes:  DefaultMaxResponseContentBytes,
 		MaxCandidates:            DefaultMaxCandidates,
 		MaxInspectedDirEntries:   DefaultMaxInspectedDirEntries,
 		MaxConcurrentReads:       workers,
@@ -51,8 +51,8 @@ func normalizeOptions(opts Options) Options {
 	if opts.MaxCandidateContentBytes <= 0 {
 		opts.MaxCandidateContentBytes = defaults.MaxCandidateContentBytes
 	}
-	if opts.MaxBundleContentBytes <= 0 {
-		opts.MaxBundleContentBytes = defaults.MaxBundleContentBytes
+	if opts.MaxResponseContentBytes <= 0 {
+		opts.MaxResponseContentBytes = defaults.MaxResponseContentBytes
 	}
 	if opts.MaxCandidates <= 0 {
 		opts.MaxCandidates = defaults.MaxCandidates

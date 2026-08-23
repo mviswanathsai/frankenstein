@@ -13,13 +13,6 @@ import (
 	"frankenstein/internal/session"
 )
 
-type lifetime string
-
-const (
-	lifetimeRetained lifetime = "retained"
-	lifetimePerCall  lifetime = "per_call"
-)
-
 const (
 	priorityExplicitRef          = 1
 	priorityDirectTouched        = 2
@@ -31,13 +24,22 @@ const (
 	priorityUnknownOptional      = 8
 )
 
+// destination is the internal classification of one source into the flat
+// response: which slot convention it carries, how strongly the provider
+// prefers it, and whether it must be accounted for against an explicit
+// input ref.
 type destination struct {
-	Lifetime   lifetime
-	Slot       ContextSlot
-	Referenced bool
-	Priority   int
-	Explicit   bool
-	RefLabel   string
+	Slot     string
+	Priority int
+	Explicit bool
+	RefLabel string
+}
+
+func newDestination(slot string, priority int, explicit bool, label string) destination {
+	if slot == "" {
+		slot = SlotUnknown
+	}
+	return destination{Slot: slot, Priority: priority, Explicit: explicit, RefLabel: label}
 }
 
 type sourceSpec struct {
@@ -53,20 +55,19 @@ type sourceSpec struct {
 }
 
 type syntheticSpec struct {
-	Candidate    ContextCandidate
-	Destination  destination
-	Order        int
-	IndexableKey string
+	Candidate   ContextCandidate
+	Destination destination
+	Order       int
 }
 
 type candidateOccurrence struct {
-	Candidate   ContextCandidate
-	Destination destination
-	Priority    int
-	Order       int
-	Explicit    bool
-	RefLabel    string
-	IndexSpec   *sourceSpec
+	Candidate ContextCandidate
+	Path      string
+	Priority  int
+	Order     int
+	Explicit  bool
+	RefLabel  string
+	IndexSpec *sourceSpec
 }
 
 func buildFileContent(spec sourceSpec, read sourceRead, opts Options) (string, string, error) {
@@ -170,13 +171,21 @@ func readLimitForSpec(spec sourceSpec, opts Options) (int64, string, error) {
 	return limit, "", nil
 }
 
-func fileCandidateID(providerID string, dest destination, spec sourceSpec) string {
-	semantic := fmt.Sprintf("%s|%s|%t|%s|%s|%s", providerID, dest.Lifetime, dest.Referenced, dest.Slot, spec.Kind, spec.Path)
+// fileCandidateID derives a deterministic candidate ID for a file-backed
+// candidate. The semantic input is provider identity, slot convention, and
+// canonical source path: the same logical candidate keeps its ID across
+// responses within a provider lifecycle, across actions, regardless of
+// ordering or priority.
+func fileCandidateID(providerID, slot, path string) string {
+	semantic := providerID + "|" + slot + "|" + path
 	return stableID("ctx", semantic)
 }
 
-func syntheticCandidateID(providerID string, dest destination, label string) string {
-	semantic := fmt.Sprintf("%s|%s|%t|%s|%s", providerID, dest.Lifetime, dest.Referenced, dest.Slot, label)
+// syntheticCandidateID derives a deterministic candidate ID for synthesized
+// (non-file-backed) candidates such as the skills index and directory
+// references.
+func syntheticCandidateID(providerID, slot, label string) string {
+	semantic := providerID + "|" + slot + "|" + label
 	return stableID("ctx", semantic)
 }
 
@@ -201,30 +210,20 @@ func directoryRef(path string, label string) session.ContextRef {
 	}
 }
 
-func occurrenceKey(occ candidateOccurrence) string {
-	return fmt.Sprintf("%s|%s|%t|%s", occ.Destination.Lifetime, occ.Destination.Slot, occ.Destination.Referenced, occ.Candidate.ID)
-}
-
+// dedupeOccurrences sorts occurrences by preference (priority, then request
+// order, then ID for determinism) and collapses duplicates by candidate ID,
+// keeping the best-ranked occurrence of each.
 func dedupeOccurrences(occurrences []candidateOccurrence) []candidateOccurrence {
 	sortOccurrences(occurrences)
-	seen := map[string]candidateOccurrence{}
-	keys := make([]string, 0, len(occurrences))
+	seen := map[string]bool{}
+	out := make([]candidateOccurrence, 0, len(occurrences))
 	for _, occ := range occurrences {
-		key := occurrenceKey(occ)
-		if existing, ok := seen[key]; ok {
-			if occ.Priority < existing.Priority || (occ.Priority == existing.Priority && occ.Order < existing.Order) {
-				seen[key] = occ
-			}
+		if seen[occ.Candidate.ID] {
 			continue
 		}
-		seen[key] = occ
-		keys = append(keys, key)
+		seen[occ.Candidate.ID] = true
+		out = append(out, occ)
 	}
-	out := make([]candidateOccurrence, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, seen[key])
-	}
-	sortOccurrences(out)
 	return out
 }
 
@@ -242,71 +241,58 @@ func sortOccurrences(occurrences []candidateOccurrence) {
 	})
 }
 
-func addOccurrenceToBundle(bundle *ContextBundle, occ candidateOccurrence) {
-	collection := &bundle.Retained
-	if occ.Destination.Lifetime == lifetimePerCall {
-		collection = &bundle.PerCall
-	}
-	if occ.Destination.Referenced {
-		collection.Referenced = append(collection.Referenced, occ.Candidate)
-		return
-	}
-	if collection.Buckets == nil {
-		collection.Buckets = ContextBuckets{}
-	}
-	collection.Buckets[occ.Destination.Slot] = append(collection.Buckets[occ.Destination.Slot], occ.Candidate)
-}
-
 func contentBytes(candidate ContextCandidate) int64 {
 	return int64(len([]byte(candidate.Content)))
 }
 
-func buildBundle(requestID, providerID string, occurrences []candidateOccurrence, failures []string, opts Options) (*ContextBundle, []sourceSpec) {
-	bundle := emptyBundle(requestID, providerID)
-	bundle.Failures = append(bundle.Failures, failures...)
+// buildResponse assembles the flat ContextResponse from occurrences. It
+// dedupes by candidate ID, enforces per-candidate and response limits, keeps
+// failure entries in accumulation order (input-ref failures arrive in input
+// order), and reports the canonical paths of candidates that were actually
+// emitted so callers can maintain lifecycle state such as the stable set.
+func buildResponse(requestID string, occurrences []candidateOccurrence, failures []string, opts Options) (*ContextResponse, []sourceSpec, []string) {
+	response := emptyResponse(requestID)
+	response.Failures = append(response.Failures, failures...)
 	occurrences = dedupeOccurrences(occurrences)
 
 	var emittedBytes int64
 	emittedCount := 0
 	indexed := make([]sourceSpec, 0)
+	emittedPaths := make([]string, 0)
 	for _, occ := range occurrences {
 		size := contentBytes(occ.Candidate)
 		if size <= 0 {
 			if occ.Explicit {
-				bundle.Failures = append(bundle.Failures, refFailure(occ.RefLabel, FailureCandidateTooLarge, "candidate content is empty"))
+				response.Failures = append(response.Failures, refFailure(occ.RefLabel, FailureCandidateTooLarge, "candidate content is empty"))
 			}
 			continue
 		}
 		if size > opts.MaxCandidateContentBytes {
 			if occ.Explicit {
-				bundle.Failures = append(bundle.Failures, refFailure(occ.RefLabel, FailureCandidateTooLarge, "candidate exceeds max candidate content bytes"))
+				response.Failures = append(response.Failures, refFailure(occ.RefLabel, FailureCandidateTooLarge, "candidate exceeds max candidate content bytes"))
 			}
 			continue
 		}
 		if emittedCount >= opts.MaxCandidates {
 			if occ.Explicit {
-				bundle.Failures = append(bundle.Failures, refFailure(occ.RefLabel, FailureCandidateCountLimitExceeded, "explicit ref cannot fit within candidate-count limit"))
+				response.Failures = append(response.Failures, refFailure(occ.RefLabel, FailureCandidateCountLimitExceeded, "explicit ref cannot fit within candidate-count limit"))
 			}
 			continue
 		}
-		if emittedBytes+size > opts.MaxBundleContentBytes {
+		if emittedBytes+size > opts.MaxResponseContentBytes {
 			if occ.Explicit {
-				bundle.Failures = append(bundle.Failures, refFailure(occ.RefLabel, FailureBundleLimitExceeded, "explicit ref cannot fit within bundle content limit"))
+				response.Failures = append(response.Failures, refFailure(occ.RefLabel, FailureResponseLimitExceeded, "explicit ref cannot fit within response content limit"))
 			}
 			continue
 		}
-		addOccurrenceToBundle(bundle, occ)
+		response.Candidates = append(response.Candidates, occ.Candidate)
+		emittedPaths = append(emittedPaths, occ.Path)
 		emittedBytes += size
 		emittedCount++
-		if occ.IndexSpec != nil && occ.IndexSpec.Indexable && occ.Destination.Lifetime == lifetimeRetained && !occ.Destination.Referenced {
+		if occ.IndexSpec != nil && occ.IndexSpec.Indexable {
 			indexed = append(indexed, *occ.IndexSpec)
 		}
 	}
 
-	sortBundle(bundle)
-	return bundle, indexed
-}
-
-func sortBundle(bundle *ContextBundle) {
-	sort.Strings(bundle.Failures)
+	return response, indexed, emittedPaths
 }

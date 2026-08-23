@@ -30,8 +30,8 @@ func run() error {
 	providerID := flags.String("provider-id", defaults.ProviderID, "provider id to report in responses")
 	maxSourceRead := flags.Int64("max-source-read-bytes", defaults.MaxSourceReadBytes, "maximum accepted source file size in bytes")
 	maxCandidateContent := flags.Int64("max-candidate-content-bytes", defaults.MaxCandidateContentBytes, "maximum bytes in each ContextCandidate.content")
-	maxBundleContent := flags.Int64("max-bundle-content-bytes", defaults.MaxBundleContentBytes, "maximum emitted candidate-content bytes per bundle")
-	maxCandidates := flags.Int("max-candidates", defaults.MaxCandidates, "maximum emitted candidates per bundle")
+	maxResponseContent := flags.Int64("max-response-content-bytes", defaults.MaxResponseContentBytes, "maximum emitted candidate-content bytes per response")
+	maxCandidates := flags.Int("max-candidates", defaults.MaxCandidates, "maximum emitted candidates per response")
 	maxDirEntries := flags.Int("max-dir-entries", defaults.MaxInspectedDirEntries, "maximum inspected directory entries per request")
 	maxWorkers := flags.Int("max-workers", defaults.MaxConcurrentReads, "maximum concurrent source reads")
 	if err := flags.Parse(os.Args[1:]); err != nil {
@@ -46,7 +46,7 @@ func run() error {
 		ProviderID:               *providerID,
 		MaxSourceReadBytes:       *maxSourceRead,
 		MaxCandidateContentBytes: *maxCandidateContent,
-		MaxBundleContentBytes:    *maxBundleContent,
+		MaxResponseContentBytes:  *maxResponseContent,
 		MaxCandidates:            *maxCandidates,
 		MaxInspectedDirEntries:   *maxDirEntries,
 		MaxConcurrentReads:       *maxWorkers,
@@ -63,36 +63,36 @@ func run() error {
 			ProviderID:      contextprovider.NewProvider(opts).Info().ProviderID,
 		}
 		return encode(os.Stdout, info)
-	case "initialize":
+	case "get-stable-context":
 		if len(args) != 1 {
-			return usageError("initialize does not accept arguments")
+			return usageError("get-stable-context does not accept arguments")
 		}
-		var input contextprovider.ContextInitializeRequest
+		var input contextprovider.StableContextRequest
 		if err := decodeRequired(&input); err != nil {
 			return err
 		}
 		provider := contextprovider.NewProvider(opts)
-		bundle, failure := provider.Initialize(context.Background(), input)
+		response, failure := provider.GetStableContext(context.Background(), input)
 		if failure != nil {
 			_ = encode(os.Stdout, failure)
 			return &exitError{Code: 1, Message: failure.Message}
 		}
-		return encode(os.Stdout, bundle)
-	case "get-context":
+		return encode(os.Stdout, response)
+	case "get-dynamic-context":
 		if len(args) != 1 {
-			return usageError("get-context does not accept arguments")
+			return usageError("get-dynamic-context does not accept arguments")
 		}
-		var input contextprovider.ContextRequest
+		var input contextprovider.DynamicContextRequest
 		if err := decodeRequired(&input); err != nil {
 			return err
 		}
 		provider := contextprovider.NewProvider(opts)
-		bundle, failure := provider.GetContext(context.Background(), input)
+		response, failure := provider.GetDynamicContext(context.Background(), input)
 		if failure != nil {
 			_ = encode(os.Stdout, failure)
 			return &exitError{Code: 1, Message: failure.Message}
 		}
-		return encode(os.Stdout, bundle)
+		return encode(os.Stdout, response)
 	default:
 		return usageError("unknown command: " + args[0])
 	}
@@ -141,8 +141,8 @@ func (e *exitError) Error() string {
 func usageError(message string) error {
 	return &exitError{
 		Code: 2,
-		Message: message + "\n\nusage: context-provider [flags] <version|initialize|get-context>\n\n" +
-			"initialize/get-context read JSON from stdin. WorkspaceRoot.path and runtime.cwd must be absolute when supplied. " +
+		Message: message + "\n\nusage: context-provider [flags] <version|get-stable-context|get-dynamic-context>\n\n" +
+			"get-stable-context/get-dynamic-context read JSON from stdin. WorkspaceRoot.path and runtime.cwd must be absolute when supplied. " +
 			"Relative refs and touched paths resolve only from runtime.cwd; cwd does not grant filesystem access.",
 	}
 }
