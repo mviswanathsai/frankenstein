@@ -4,8 +4,8 @@ import (
 	"context"
 	"strconv"
 
-	"frankenstein/internal/contextbuilder"
 	"frankenstein/internal/contextprovider"
+	"frankenstein/internal/contextrenderer"
 	"frankenstein/internal/modelinvocation"
 	"frankenstein/internal/session"
 	"frankenstein/internal/toolinvocation"
@@ -20,7 +20,7 @@ type innerLoopResult struct {
 	newRecords   []session.SessionRecord
 }
 
-// runInnerLoop executes the model-call loop for one turn: prepare, invoke,
+// runInnerLoop executes the model-call loop for one turn: render, invoke,
 // dispatch on stop reason, execute tools, and repeat until an exit condition
 // fires or the turn budget is exhausted. Tool results are returned as
 // newRecords for the caller to persist; the loop does not touch Session,
@@ -30,42 +30,44 @@ func runInnerLoop(
 	cfg Config,
 	tools ToolInvoker,
 	model ModelInvoker,
-	builder ContextBuilder,
+	renderer ContextRenderer,
 	observer TurnObserver,
 	sessionID string,
 	turnID string,
 	resolvedModel string,
-	prefix contextbuilder.BuiltPrefix,
+	rendererConfig contextrenderer.Config,
 	transcript []session.SessionRecord,
-	activeCatalog *toolinvocation.ToolCatalog,
-	dynamic []contextprovider.ContextResponse,
+	dynamic *contextprovider.ContextResponse,
 ) innerLoopResult {
 	var newRecords []session.SessionRecord
+
+	// The invocation catalog starts as the session-frozen catalog held in
+	// config. It changes only through catalog transitions mid-turn.
+	activeCatalog := rendererConfig.Tools
 
 	for iter := 1; iter <= cfg.TurnBudget; iter++ {
 		iterStr := strconv.Itoa(iter)
 
-		// Prepare the model input from the prefix, the current transcript,
-		// and any dynamic context responses.
-		builtCtx, err := builder.Prepare(contextbuilder.PrepareRequest{
-			ID:         "prep_" + turnID + "_" + iterStr,
-			SessionID:  sessionID,
-			TurnID:     turnID,
-			Prefix:     prefix,
-			Transcript: transcript,
-			Dynamic:    dynamic,
+		// Render the model input from the session config, the current
+		// transcript, and the per-turn dynamic context response.
+		rendered, err := renderer.Render(contextrenderer.RenderRequest{
+			ID:             "rnd_" + turnID + "_" + iterStr,
+			SessionID:      sessionID,
+			Transcript:     transcript,
+			DynamicContext: dynamic,
+			Config:         &rendererConfig,
 		})
 		if err != nil {
 			return innerLoopResult{exitReason: ExitInternalError, newRecords: newRecords}
 		}
 
-		// Invoke the model with the assembled input and the active catalog.
+		// Invoke the model with the rendered input and the active catalog.
 		req := modelinvocation.ModelInvocationRequest{
 			ID:        "inv_" + turnID + "_" + iterStr,
 			SessionID: sessionID,
 			TurnID:    turnID,
 			Model:     resolvedModel,
-			Input:     builtCtx.Input,
+			Input:     rendered.Input,
 			Catalog:   activeCatalog,
 		}
 

@@ -3,11 +3,12 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
-	"frankenstein/internal/contextbuilder"
 	"frankenstein/internal/contextprovider"
+	"frankenstein/internal/contextrenderer"
 	"frankenstein/internal/modelinvocation"
 	"frankenstein/internal/session"
 	"frankenstein/internal/toolinvocation"
@@ -134,13 +135,15 @@ func (f *fakeSession) version() int64 {
 }
 
 type fakeTools struct {
-	catalog     toolinvocation.ToolCatalog
-	listErr     *toolinvocation.ToolCatalogFailure
-	executeRes  *toolinvocation.ToolExecutionResult
-	executeErr  *toolinvocation.ToolExecutionFailure
+	catalog    toolinvocation.ToolCatalog
+	listErr    *toolinvocation.ToolCatalogFailure
+	executeRes *toolinvocation.ToolExecutionResult
+	executeErr *toolinvocation.ToolExecutionFailure
+	listCalls  int
 }
 
 func (f *fakeTools) ListTools(ctx context.Context, req toolinvocation.ToolCatalogRequest) (*toolinvocation.ToolCatalogListed, *toolinvocation.ToolCatalogFailure) {
+	f.listCalls++
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -163,19 +166,15 @@ func (f *fakeModel) Invoke(ctx context.Context, req modelinvocation.ModelInvocat
 	return f.result, f.failure
 }
 
-type fakeBuilder struct {
-	assemblePrefix contextbuilder.BuiltPrefix
-	assembleErr    error
-	prepareCtx    contextbuilder.BuiltContext
-	prepareErr    error
+type fakeRenderer struct {
+	renderResult   contextrenderer.RenderResult
+	renderErr      error
+	renderRequests []contextrenderer.RenderRequest
 }
 
-func (f *fakeBuilder) Assemble(req contextbuilder.AssembleRequest) (contextbuilder.BuiltPrefix, error) {
-	return f.assemblePrefix, f.assembleErr
-}
-
-func (f *fakeBuilder) Prepare(req contextbuilder.PrepareRequest) (contextbuilder.BuiltContext, error) {
-	return f.prepareCtx, f.prepareErr
+func (f *fakeRenderer) Render(req contextrenderer.RenderRequest) (contextrenderer.RenderResult, error) {
+	f.renderRequests = append(f.renderRequests, req)
+	return f.renderResult, f.renderErr
 }
 
 type fakeContextProvider struct {
@@ -183,30 +182,38 @@ type fakeContextProvider struct {
 	stableFailure   *contextprovider.ContextFailure
 	dynamicResponse *contextprovider.ContextResponse
 	dynamicFailure  *contextprovider.ContextFailure
+	stableCalls     int
+	dynamicCalls    int
 }
 
 func (f *fakeContextProvider) GetStableContext(ctx context.Context, req contextprovider.StableContextRequest) (*contextprovider.ContextResponse, *contextprovider.ContextFailure) {
+	f.stableCalls++
 	return f.stableResponse, f.stableFailure
 }
 
 func (f *fakeContextProvider) GetDynamicContext(ctx context.Context, req contextprovider.DynamicContextRequest) (*contextprovider.ContextResponse, *contextprovider.ContextFailure) {
+	f.dynamicCalls++
 	return f.dynamicResponse, f.dynamicFailure
 }
 
 // noopObserver is a TurnObserver that records what it sees.
 type noopObserver struct {
-	contents   []string
-	reasonings []string
-	toolStarts []string
-	toolResults []toolinvocation.ToolResult
-	turnEndReason ExitReason
+	contents       []string
+	reasonings     []string
+	toolStarts     []string
+	toolResults    []toolinvocation.ToolResult
+	turnEndReason  ExitReason
 	turnEndContent string
 }
 
-func (o *noopObserver) OnModelContent(delta string)      { o.contents = append(o.contents, delta) }
-func (o *noopObserver) OnReasoning(delta string)          { o.reasonings = append(o.reasonings, delta) }
-func (o *noopObserver) OnToolCallStart(name string, args map[string]any) { o.toolStarts = append(o.toolStarts, name) }
-func (o *noopObserver) OnToolResult(result toolinvocation.ToolResult)    { o.toolResults = append(o.toolResults, result) }
+func (o *noopObserver) OnModelContent(delta string) { o.contents = append(o.contents, delta) }
+func (o *noopObserver) OnReasoning(delta string)    { o.reasonings = append(o.reasonings, delta) }
+func (o *noopObserver) OnToolCallStart(name string, args map[string]any) {
+	o.toolStarts = append(o.toolStarts, name)
+}
+func (o *noopObserver) OnToolResult(result toolinvocation.ToolResult) {
+	o.toolResults = append(o.toolResults, result)
+}
 func (o *noopObserver) OnTurnEnd(exitReason ExitReason, finalContent string) {
 	o.turnEndReason = exitReason
 	o.turnEndContent = finalContent
@@ -234,14 +241,14 @@ func newTestSession(id string) *session.Session {
 
 func strPtr(s string) *string { return &s }
 
-func newTestKernel() (*Kernel, *fakeSession, *fakeTools, *fakeModel, *fakeBuilder, *fakeContextProvider) {
+func newTestKernel() (*Kernel, *fakeSession, *fakeTools, *fakeModel, *fakeRenderer, *fakeContextProvider) {
 	fs := &fakeSession{}
 	ft := &fakeTools{}
 	fm := &fakeModel{}
-	fb := &fakeBuilder{}
+	fr := &fakeRenderer{}
 	fc := &fakeContextProvider{}
-	k := New(DefaultConfig(), ft, fm, fs, fb, fc)
-	return k, fs, ft, fm, fb, fc
+	k := New(DefaultConfig(), ft, fm, fs, fr, fc)
+	return k, fs, ft, fm, fr, fc
 }
 
 func completeTurnResult(content string) *modelinvocation.ModelInvocationResult {
@@ -249,6 +256,16 @@ func completeTurnResult(content string) *modelinvocation.ModelInvocationResult {
 		RequestID:  "inv1",
 		Content:    content,
 		StopReason: modelinvocation.StopEndTurn,
+	}
+}
+
+// okRendererResult is a valid RenderResult for tests that don't inspect the
+// rendered input.
+func okRendererResult() contextrenderer.RenderResult {
+	return contextrenderer.RenderResult{
+		RequestID:      "rnd1",
+		Input:          modelinvocation.ModelInput{System: "prompt", Messages: []modelinvocation.ModelMessage{}},
+		SystemPromptID: "abc123",
 	}
 }
 
@@ -350,22 +367,13 @@ func TestBuildToolResultRecords(t *testing.T) {
 }
 
 func TestNewSession(t *testing.T) {
-	k, fs, ft, fm, fb, fc := newTestKernel()
+	k, fs, ft, fm, fr, fc := newTestKernel()
 	fs.created = newTestSession("sess1")
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
 	fc.stableResponse = &contextprovider.ContextResponse{}
 	fc.dynamicResponse = &contextprovider.ContextResponse{}
 	fm.result = completeTurnResult("hello from model")
-	fb.assemblePrefix = contextbuilder.BuiltPrefix{
-		SystemPrompt:   "you are helpful",
-		SystemPromptID: "abc123",
-	}
-	fb.prepareCtx = contextbuilder.BuiltContext{
-		Input: modelinvocation.ModelInput{
-			System:   "you are helpful",
-			Messages: []modelinvocation.ModelMessage{},
-		},
-	}
+	fr.renderResult = okRendererResult()
 
 	obs := &noopObserver{}
 	k.observer = obs
@@ -386,16 +394,20 @@ func TestNewSession(t *testing.T) {
 		t.Errorf("model content = %s, want hello from model", obs.contents[0])
 	}
 
-	// Prefix and frozen stable context should be cached in session metadata.
-	cached, ok := loadBuiltPrefix(fs.created)
-	if !ok {
-		t.Fatal("built prefix should be cached")
+	// Config is built from one get_stable_context and one list_tools call.
+	if fc.stableCalls != 1 {
+		t.Errorf("get_stable_context calls = %d, want 1", fc.stableCalls)
 	}
-	if cached.SystemPromptID != "abc123" {
-		t.Errorf("cached SystemPromptID = %s, want abc123", cached.SystemPromptID)
+	if ft.listCalls != 1 {
+		t.Errorf("list_tools calls = %d, want 1", ft.listCalls)
 	}
-	if _, ok := loadStableContext(fs.created); !ok {
-		t.Fatal("stable context should be frozen into session metadata")
+
+	// The renderer receives the session config.
+	if len(fr.renderRequests) != 1 {
+		t.Fatalf("render calls = %d, want 1", len(fr.renderRequests))
+	}
+	if fr.renderRequests[0].Config == nil {
+		t.Error("render config should not be nil")
 	}
 
 	// Final assistant message should be written through WriteMessage.
@@ -447,39 +459,85 @@ func TestTurnIDFormat(t *testing.T) {
 	}
 }
 
-func TestContinueReusesPrefix(t *testing.T) {
-	k, fs, ft, fm, fb, fc := newTestKernel()
-
-	// Set up a session with a cached prefix.
-	sess := newTestSession("sess1")
-	prefix := contextbuilder.BuiltPrefix{
-		SystemPrompt:   "cached prompt",
-		SystemPromptID: "cached123",
-	}
-	raw, _ := json.Marshal(prefix)
-	sess.Metadata.Custom[builtPrefixKey] = raw
-	fs.created = sess
-	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
+func TestConfigBuiltOncePerSession(t *testing.T) {
+	k, fs, ft, fm, fr, fc := newTestKernel()
+	fs.created = newTestSession("sess1")
+	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1", Tools: []toolinvocation.ToolDefinition{{ID: "t1", Name: "ls", Description: "List files."}}}
+	fc.stableResponse = &contextprovider.ContextResponse{Candidates: []contextprovider.ContextCandidate{
+		{ID: "id-1", Metadata: map[string]any{contextprovider.MetadataKeySlot: "identity"}, Content: "You are Frank."},
+	}}
 	fc.dynamicResponse = &contextprovider.ContextResponse{}
-	fm.result = completeTurnResult("continued response")
-	fb.prepareCtx = contextbuilder.BuiltContext{
-		Input: modelinvocation.ModelInput{
-			System:   "cached prompt",
-			Messages: []modelinvocation.ModelMessage{},
-		},
-	}
+	fm.result = completeTurnResult("ok")
+	fr.renderResult = okRendererResult()
 
-	obs := &noopObserver{}
-	k.observer = obs
-	err := k.Continue(context.Background(), ContinueInput{SessionID: "sess1", Messages: []string{"continue"}})
-	if err != nil {
+	if _, err := k.New(context.Background(), NewInput{Messages: []string{"hello"}}); err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	if err := k.Continue(context.Background(), ContinueInput{SessionID: "sess1", Messages: []string{"again"}}); err != nil {
 		t.Fatalf("Continue failed: %v", err)
 	}
-	if obs.turnEndReason != ExitCompleted {
-		t.Errorf("exit reason = %s, want %s", obs.turnEndReason, ExitCompleted)
+
+	// Config is built once and reused across both turns.
+	if fc.stableCalls != 1 {
+		t.Errorf("get_stable_context calls = %d, want 1", fc.stableCalls)
 	}
-	if obs.turnEndContent != "continued response" {
-		t.Errorf("final content = %s, want continued response", obs.turnEndContent)
+	if ft.listCalls != 1 {
+		t.Errorf("list_tools calls = %d, want 1", ft.listCalls)
+	}
+	if fc.dynamicCalls != 2 {
+		t.Errorf("get_dynamic_context calls = %d, want 2 (one per turn)", fc.dynamicCalls)
+	}
+}
+
+func TestConfigRebuiltOnModelChange(t *testing.T) {
+	k, fs, ft, fm, fr, fc := newTestKernel()
+	k.cfg.DefaultModel = "model-a"
+	fs.created = newTestSession("sess1")
+	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
+	fc.stableResponse = &contextprovider.ContextResponse{}
+	fc.dynamicResponse = &contextprovider.ContextResponse{}
+	fm.result = completeTurnResult("ok")
+	fr.renderResult = okRendererResult()
+
+	if _, err := k.New(context.Background(), NewInput{Messages: []string{"hello"}}); err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	if err := k.Continue(context.Background(), ContinueInput{SessionID: "sess1", Messages: []string{"again"}, Model: "model-b"}); err != nil {
+		t.Fatalf("Continue failed: %v", err)
+	}
+
+	if fc.stableCalls != 2 {
+		t.Errorf("get_stable_context calls = %d, want 2 (rebuilt on model change)", fc.stableCalls)
+	}
+	if ft.listCalls != 2 {
+		t.Errorf("list_tools calls = %d, want 2 (rebuilt on model change)", ft.listCalls)
+	}
+	if len(fr.renderRequests) != 2 {
+		t.Fatalf("render calls = %d, want 2", len(fr.renderRequests))
+	}
+	if fr.renderRequests[0].Config.Model != "model-a" {
+		t.Errorf("first render config model = %q, want model-a", fr.renderRequests[0].Config.Model)
+	}
+	if fr.renderRequests[1].Config.Model != "model-b" {
+		t.Errorf("second render config model = %q, want model-b", fr.renderRequests[1].Config.Model)
+	}
+}
+
+func TestMaterialSectionsFromCandidates(t *testing.T) {
+	candidates := []contextprovider.ContextCandidate{
+		{ID: "a", Metadata: map[string]any{contextprovider.MetadataKeySlot: "identity"}, Content: "A"},
+		{ID: "b", Metadata: map[string]any{}, Content: "B"},
+		{ID: "c", Metadata: map[string]any{contextprovider.MetadataKeySlot: 42}, Content: "C"},
+		{ID: "d", Metadata: map[string]any{contextprovider.MetadataKeySlot: "instructions"}, Content: "D"},
+		{ID: "e", Metadata: map[string]any{contextprovider.MetadataKeySlot: "  "}, Content: "E"},
+	}
+	got := materialSectionsFromCandidates(candidates)
+	want := []contextrenderer.MaterialSection{
+		{Name: "identity", Content: "A"},
+		{Name: "instructions", Content: "D"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("materialSectionsFromCandidates() = %+v, want %+v", got, want)
 	}
 }
 
@@ -501,15 +559,12 @@ func TestSessionBudgetBlocksContinue(t *testing.T) {
 }
 
 func TestToolStopRequestedExits(t *testing.T) {
-	k, fs, ft, fm, fb, fc := newTestKernel()
+	k, fs, ft, fm, fr, fc := newTestKernel()
 	fs.created = newTestSession("sess1")
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
 	fc.stableResponse = &contextprovider.ContextResponse{}
 	fc.dynamicResponse = &contextprovider.ContextResponse{}
-	fb.assemblePrefix = contextbuilder.BuiltPrefix{SystemPrompt: "prompt", SystemPromptID: "p1"}
-	fb.prepareCtx = contextbuilder.BuiltContext{
-		Input: modelinvocation.ModelInput{System: "prompt", Messages: []modelinvocation.ModelMessage{}},
-	}
+	fr.renderResult = okRendererResult()
 
 	// Model returns tool_calls, then tool execution returns stop_requested.
 	fm.result = &modelinvocation.ModelInvocationResult{
@@ -543,15 +598,12 @@ func TestToolStopRequestedExits(t *testing.T) {
 }
 
 func TestModelErrorExit(t *testing.T) {
-	k, fs, ft, fm, fb, fc := newTestKernel()
+	k, fs, ft, fm, fr, fc := newTestKernel()
 	fs.created = newTestSession("sess1")
 	// No catalog or context needed since model fails immediately.
 	fc.stableResponse = &contextprovider.ContextResponse{}
 	fc.dynamicResponse = &contextprovider.ContextResponse{}
-	fb.assemblePrefix = contextbuilder.BuiltPrefix{SystemPrompt: "prompt", SystemPromptID: "p1"}
-	fb.prepareCtx = contextbuilder.BuiltContext{
-		Input: modelinvocation.ModelInput{System: "prompt", Messages: []modelinvocation.ModelMessage{}},
-	}
+	fr.renderResult = okRendererResult()
 	ft = &fakeTools{catalog: toolinvocation.ToolCatalog{ID: "cat1"}}
 	k.tools = ft
 
@@ -572,16 +624,13 @@ func TestModelErrorExit(t *testing.T) {
 }
 
 func TestTurnBudgetExhausted(t *testing.T) {
-	k, fs, ft, fm, fb, fc := newTestKernel()
+	k, fs, ft, fm, fr, fc := newTestKernel()
 	k.cfg.TurnBudget = 2 // small budget
 	fs.created = newTestSession("sess1")
 	ft.catalog = toolinvocation.ToolCatalog{ID: "cat1"}
 	fc.stableResponse = &contextprovider.ContextResponse{}
 	fc.dynamicResponse = &contextprovider.ContextResponse{}
-	fb.assemblePrefix = contextbuilder.BuiltPrefix{SystemPrompt: "prompt", SystemPromptID: "p1"}
-	fb.prepareCtx = contextbuilder.BuiltContext{
-		Input: modelinvocation.ModelInput{System: "prompt", Messages: []modelinvocation.ModelMessage{}},
-	}
+	fr.renderResult = okRendererResult()
 
 	// Model always returns tool_calls, tool execution succeeds with no stop.
 	// This loops until the turn budget is exhausted.

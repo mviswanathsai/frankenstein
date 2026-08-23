@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"frankenstein/internal/contextrenderer"
 )
 
 // Kernel is the harness turn loop. It sequences capability calls, owns the
@@ -17,11 +19,17 @@ type Kernel struct {
 	state KernelState
 	cfg   Config
 
-	tools   ToolInvoker
-	model   ModelInvoker
-	session SessionStore
-	builder ContextBuilder
-	ctxProv ContextProvider
+	tools    ToolInvoker
+	model    ModelInvoker
+	session  SessionStore
+	renderer ContextRenderer
+	ctxProv  ContextProvider
+
+	// rendererConfigs holds per-session renderer config in kernel memory.
+	// Config is built once per session and reused across turns; it is rebuilt
+	// only on deliberate reassembly (for v0, a resolved-model change).
+	rendererConfigsMu sync.Mutex
+	rendererConfigs   map[string]contextrenderer.Config
 
 	turnID    string
 	observer  TurnObserver
@@ -34,15 +42,16 @@ var ErrInvalidSession = errors.New("session_id is required")
 
 // New creates a kernel with the given config and capability services.
 // All service parameters are required (no nil checks in v0).
-func New(cfg Config, tools ToolInvoker, model ModelInvoker, session SessionStore, builder ContextBuilder, ctxProv ContextProvider) *Kernel {
+func New(cfg Config, tools ToolInvoker, model ModelInvoker, session SessionStore, renderer ContextRenderer, ctxProv ContextProvider) *Kernel {
 	return &Kernel{
-		state:   KernelIdle,
-		cfg:     cfg,
-		tools:   tools,
-		model:   model,
-		session: session,
-		builder: builder,
-		ctxProv: ctxProv,
+		state:           KernelIdle,
+		cfg:             cfg,
+		tools:           tools,
+		model:           model,
+		session:         session,
+		renderer:        renderer,
+		ctxProv:         ctxProv,
+		rendererConfigs: map[string]contextrenderer.Config{},
 	}
 }
 

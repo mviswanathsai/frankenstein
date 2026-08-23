@@ -2,21 +2,15 @@ package kernel
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 
-	"frankenstein/internal/contextbuilder"
 	"frankenstein/internal/contextprovider"
+	"frankenstein/internal/contextrenderer"
 	"frankenstein/internal/session"
 	"frankenstein/internal/toolinvocation"
-)
-
-const (
-	builtPrefixKey   = "built_prefix"
-	stableContextKey = "stable_context"
 )
 
 // runTurn executes one full turn: session create/get, setup sequence,
@@ -64,45 +58,16 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 		return sessionID, fmt.Errorf("%w: session budget exceeded", errors.New(string(ExitBudgetExhausted)))
 	}
 
-	// --- Setup or reuse cached prefix ---
-	cachedPrefix, hasCached := loadBuiltPrefix(sess)
-	var builtPrefix contextbuilder.BuiltPrefix
-	var dynamic *contextprovider.ContextResponse
-	var catalog toolinvocation.ToolCatalog
-
-	// Dynamic context is needed by the inner loop on every path.
-	dynamic, err = k.getDynamicWithRetry(ctx, sessionID)
+	// --- Load or build the session config ---
+	rendererConfig, err := k.getOrBuildConfig(ctx, sessionID, model)
 	if err != nil {
 		return sessionID, err
 	}
 
-	if hasCached {
-		builtPrefix = cachedPrefix
-
-		// Still need the catalog for the inner loop.
-		catalog, err = k.listToolsWithRetry(ctx, sessionID)
-		if err != nil {
-			return sessionID, err
-		}
-	} else {
-		catalog, err = k.listToolsWithRetry(ctx, sessionID)
-		if err != nil {
-			return sessionID, err
-		}
-
-		stable, err := k.ensureStableContext(ctx, sessionID, sess)
-		if err != nil {
-			return sessionID, err
-		}
-
-		builtPrefix, err = k.assembleWithRetry(ctx, sessionID, model, stable.Candidates, catalog)
-		if err != nil {
-			return sessionID, err
-		}
-
-		if err := k.storeBuiltPrefix(ctx, sessionID, sess, builtPrefix); err != nil {
-			return sessionID, err
-		}
+	// --- Dynamic context (per turn) ---
+	dynamic, err := k.getDynamicWithRetry(ctx, sessionID)
+	if err != nil {
+		return sessionID, err
 	}
 
 	// --- Transcript ---
@@ -112,9 +77,8 @@ func (k *Kernel) runTurn(ctx context.Context, sessionID string, input NewInput) 
 	}
 
 	// --- Inner loop ---
-	result := runInnerLoop(ctx, k.cfg, k.tools, k.model, k.builder, k.observer,
-		sessionID, k.turnID, model, builtPrefix,
-		transcript.Records, &catalog, []contextprovider.ContextResponse{*dynamic},
+	result := runInnerLoop(ctx, k.cfg, k.tools, k.model, k.renderer, k.observer,
+		sessionID, k.turnID, model, rendererConfig, transcript.Records, dynamic,
 	)
 
 	// --- Append accumulated records ---
@@ -180,92 +144,66 @@ func (k *Kernel) resolveModel(sess *session.Session, input NewInput) string {
 	return k.cfg.DefaultModel
 }
 
-// loadBuiltPrefix returns the stored BuiltPrefix from session metadata, if any.
-func loadBuiltPrefix(sess *session.Session) (contextbuilder.BuiltPrefix, bool) {
-	raw, ok := sess.Metadata.Custom[builtPrefixKey]
-	if !ok {
-		return contextbuilder.BuiltPrefix{}, false
+// getOrBuildConfig returns the session's renderer config, reusing the stored
+// config when it exists and its model matches the resolved model. A missing
+// config, or a resolved model that differs from the stored config's model,
+// triggers a rebuild. The config is held in kernel memory, never in session
+// metadata.
+func (k *Kernel) getOrBuildConfig(ctx context.Context, sessionID, model string) (contextrenderer.Config, error) {
+	k.rendererConfigsMu.Lock()
+	cfg, ok := k.rendererConfigs[sessionID]
+	k.rendererConfigsMu.Unlock()
+	if ok && cfg.Model == model {
+		return cfg, nil
 	}
-	var prefix contextbuilder.BuiltPrefix
-	if err := json.Unmarshal(raw, &prefix); err != nil {
-		return contextbuilder.BuiltPrefix{}, false
-	}
-	return prefix, true
-}
 
-// storeBuiltPrefix writes the BuiltPrefix into session metadata. set_metadata
-// is a full replacement, so the whole metadata object is rebuilt from the
-// current session with the prefix added.
-func (k *Kernel) storeBuiltPrefix(ctx context.Context, sessionID string, sess *session.Session, prefix contextbuilder.BuiltPrefix) error {
-	raw, err := json.Marshal(prefix)
+	cfg, err := k.buildRendererConfig(ctx, sessionID, model)
 	if err != nil {
-		return fmt.Errorf("marshal built prefix: %w", err)
+		return contextrenderer.Config{}, err
 	}
-	metadata := sess.Metadata
-	if metadata.Custom == nil {
-		metadata.Custom = make(map[string]json.RawMessage)
-	}
-	metadata.Custom[builtPrefixKey] = raw
-	_, err = k.session.SetMetadata(ctx, session.SetMetadataInput{
-		SessionID: sessionID,
-		Metadata:  metadata,
-	})
-	return err
+
+	k.rendererConfigsMu.Lock()
+	k.rendererConfigs[sessionID] = cfg
+	k.rendererConfigsMu.Unlock()
+	return cfg, nil
 }
 
-// loadStableContext returns the frozen stable response from session metadata,
-// if any. The stable response survives process restarts the same way the
-// built prefix does.
-func loadStableContext(sess *session.Session) (*contextprovider.ContextResponse, bool) {
-	raw, ok := sess.Metadata.Custom[stableContextKey]
-	if !ok {
-		return nil, false
-	}
-	var response contextprovider.ContextResponse
-	if err := json.Unmarshal(raw, &response); err != nil {
-		return nil, false
-	}
-	return &response, true
-}
-
-// ensureStableContext returns the frozen stable response for the session,
-// fetching and storing it once if it is not already present. Resumed sessions
-// without a stored stable response (for example, sessions created before this
-// key existed) fetch a fresh one here.
-func (k *Kernel) ensureStableContext(ctx context.Context, sessionID string, sess *session.Session) (*contextprovider.ContextResponse, error) {
-	if resp, ok := loadStableContext(sess); ok {
-		return resp, nil
-	}
-	resp, err := k.getStableWithRetry(ctx, sessionID)
+// buildRendererConfig builds a fresh config for the session: one
+// get_stable_context call (candidates mapped to material sections by their
+// metadata slot convention), one list_tools call (the frozen catalog), and
+// the resolved model.
+func (k *Kernel) buildRendererConfig(ctx context.Context, sessionID, model string) (contextrenderer.Config, error) {
+	stable, err := k.getStableWithRetry(ctx, sessionID)
 	if err != nil {
-		return nil, err
+		return contextrenderer.Config{}, err
 	}
-	if err := k.storeStableContext(ctx, sessionID, sess, resp); err != nil {
-		return nil, fmt.Errorf("store stable context: %w", err)
+	catalog, err := k.listToolsWithRetry(ctx, sessionID)
+	if err != nil {
+		return contextrenderer.Config{}, err
 	}
-	return resp, nil
+	return contextrenderer.Config{
+		Material: materialSectionsFromCandidates(stable.Candidates),
+		Tools:    &catalog,
+		Model:    model,
+	}, nil
 }
 
-// storeStableContext writes the stable response into session metadata using
-// the same full-replacement pattern as storeBuiltPrefix. Both helpers mutate
-// the same in-memory session object, so keys written by one remain visible
-// to the other.
-func (k *Kernel) storeStableContext(ctx context.Context, sessionID string, sess *session.Session, resp *contextprovider.ContextResponse) error {
-	raw, err := json.Marshal(resp)
-	if err != nil {
-		return fmt.Errorf("marshal stable context: %w", err)
+// materialSectionsFromCandidates maps stable candidates to material sections,
+// taking the section name from the candidate's metadata slot convention and
+// skipping candidates with no usable name.
+func materialSectionsFromCandidates(candidates []contextprovider.ContextCandidate) []contextrenderer.MaterialSection {
+	sections := make([]contextrenderer.MaterialSection, 0, len(candidates))
+	for _, c := range candidates {
+		name, _ := c.Metadata[contextprovider.MetadataKeySlot].(string)
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		sections = append(sections, contextrenderer.MaterialSection{
+			Name:    name,
+			Content: c.Content,
+		})
 	}
-	metadata := sess.Metadata
-	if metadata.Custom == nil {
-		metadata.Custom = make(map[string]json.RawMessage)
-	}
-	metadata.Custom[stableContextKey] = raw
-	sess.Metadata = metadata
-	_, err = k.session.SetMetadata(ctx, session.SetMetadataInput{
-		SessionID: sessionID,
-		Metadata:  metadata,
-	})
-	return err
+	return sections
 }
 
 // --- Setup helpers with retry ---
@@ -343,28 +281,6 @@ func (k *Kernel) getDynamicWithRetry(ctx context.Context, sessionID string) (*co
 		}
 	}
 	return nil, fmt.Errorf("get_dynamic_context failed: %v", lastFailure)
-}
-
-func (k *Kernel) assembleWithRetry(ctx context.Context, sessionID, model string, stableCandidates []contextprovider.ContextCandidate, catalog toolinvocation.ToolCatalog) (contextbuilder.BuiltPrefix, error) {
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		prefix, err := k.builder.Assemble(contextbuilder.AssembleRequest{
-			ID:               "asm_" + k.turnID,
-			SessionID:        sessionID,
-			Model:            model,
-			StableCandidates: stableCandidates,
-			Catalog:          &catalog,
-		})
-		if err == nil {
-			return prefix, nil
-		}
-		lastErr = err
-		var cbErr contextbuilder.ContextBuilderFailure
-		if errors.As(err, &cbErr) && !cbErr.Retryable {
-			break
-		}
-	}
-	return contextbuilder.BuiltPrefix{}, fmt.Errorf("assemble failed: %w", lastErr)
 }
 
 func (k *Kernel) getWithRetry(ctx context.Context, sessionID string) (*session.Session, error) {

@@ -3,8 +3,8 @@ package kernel
 import (
 	"context"
 
-	"frankenstein/internal/contextbuilder"
 	"frankenstein/internal/contextprovider"
+	"frankenstein/internal/contextrenderer"
 	"frankenstein/internal/modelinvocation"
 	"frankenstein/internal/session"
 	"frankenstein/internal/toolinvocation"
@@ -51,19 +51,18 @@ type SessionStore interface {
 	SetUsage(ctx context.Context, input session.SetUsageInput) (*session.SetResult, error)
 }
 
-// ContextBuilder is the kernel's outbound surface to the Context Builder
-// capability. The kernel calls assemble (with the frozen stable candidates)
-// and prepare (with per-turn dynamic responses); estimate is a
-// builder-owned surface the v0 kernel does not call.
-type ContextBuilder interface {
-	Assemble(req contextbuilder.AssembleRequest) (contextbuilder.BuiltPrefix, error)
-	Prepare(req contextbuilder.PrepareRequest) (contextbuilder.BuiltContext, error)
+// ContextRenderer is the kernel's outbound surface to the Context Renderer
+// capability. The kernel calls render once per inner-loop iteration with the
+// session-scoped config, the current transcript, and the per-turn dynamic
+// context response.
+type ContextRenderer interface {
+	Render(req contextrenderer.RenderRequest) (contextrenderer.RenderResult, error)
 }
 
 // ContextProvider is the kernel's outbound surface to the Context Provider
-// capability. GetStableContext runs once per session and its response is
-// frozen into session metadata; GetDynamicContext runs per turn. Exactly one
-// of response or failure is non-nil.
+// capability. GetStableContext runs once per session and its candidates are
+// frozen into the renderer config; GetDynamicContext runs per turn. Exactly
+// one of response or failure is non-nil.
 type ContextProvider interface {
 	GetDynamicContext(ctx context.Context, req contextprovider.DynamicContextRequest) (*contextprovider.ContextResponse, *contextprovider.ContextFailure)
 	GetStableContext(ctx context.Context, req contextprovider.StableContextRequest) (*contextprovider.ContextResponse, *contextprovider.ContextFailure)
