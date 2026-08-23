@@ -16,13 +16,13 @@ Design rationale and Hermes evidence live in
 surface.
 
 `context_provider.v0.2` replaces the two-action, layered shape of v0.1 with
-one action and one flat offering. The `initialize` action is gone; the
-`retained`/`per_call` lifetime split and the `referenced` channel are gone.
-Stable context — agent identity, configured instructions, skill indexes, tool
-guidance — is runtime-loaded configuration that flows directly to the context
-builder. The provider owns only dynamic context: material that must be found
-during a session. Placement and retention are builder decisions, not provider
-labels.
+one action and one flat `DynamicContext` response. The `initialize` action is
+gone; the `retained`/`per_call` lifetime split and the `referenced` channel
+are gone. Stable context — agent identity, configured instructions, skill
+indexes, tool guidance — is runtime-loaded configuration that flows directly
+to the context renderer. The provider owns only dynamic context: material
+that must be found during a session. Placement and retention are renderer
+decisions, not provider labels.
 
 ## Purpose
 
@@ -31,14 +31,14 @@ harness splits context by how it becomes known:
 
 - what the runtime already knows — agent identity, configured instructions,
   workspace grants, tool guidance — is loaded at startup and passed directly
-  to the context builder as stable material
+  to the context renderer as stable material
 - what must be found during the session — memory recall for the current
   message, an instruction file discovered in a directory a tool just touched,
   query-shaped retrieval — is this capability's job
 
 The provider does not decide what the model sees, where it is placed, or how
 long it is retained. It returns candidates with honest accounting of the
-evidence it was given. The context builder owns placement, retention, and
+evidence it was given. The context renderer owns placement, retention, and
 final materialization.
 
 The provider does not own the session's canonical conversation record,
@@ -67,21 +67,21 @@ If a service wants durable writes, model-facing tools, memory observation,
 forget/redact operations, or index rebuild commands, those are separate
 advertised surfaces.
 
-## The Offering
+## The Dynamic Context
 
 A response carries the candidates the provider currently wants considered,
 with honest accounting of the evidence it was given. This contract takes no
-position on offering granularity: a response may be the provider's complete
+position on response granularity: a response may be the provider's complete
 current view, a delta against an earlier response, or only current-turn
 relevance. That choice is provider policy.
 
 The contract likewise takes no position on retention. Whether a candidate
 persists in model input across calls, and how its disappearance is expressed,
-is a pairing concern between a provider implementation and a builder
+is a pairing concern between a provider implementation and a renderer
 implementation, not a contract promise. The reference provider documented in
-the service dossier returns its complete current offering and pairs with a
-builder that supersedes on change; a current-only provider pairs with a
-current-only builder. Neither direction is legislated here.
+the service dossier returns its complete current dynamic context and pairs
+with a renderer that supersedes on change; a current-only provider pairs with
+a current-only renderer. Neither direction is legislated here.
 
 The provider does not label candidates by lifetime or placement. There is no
 contract-level notion of retained, per-call, or mid-session context.
@@ -193,14 +193,15 @@ Terminal events:
 Successful output payload:
 
 ```text
-ContextOffering {
+DynamicContext {
   request_id
   candidates: ContextCandidate[]
   failures: string[]
 }
 ```
 
-`request_id` references the `id` of the request that produced this offering.
+`request_id` references the `id` of the request that produced this dynamic
+context.
 
 `candidates` is a required ordered list and may be empty. Ordering
 communicates the provider's relative preference across the whole list.
@@ -208,8 +209,8 @@ communicates the provider's relative preference across the whole list.
 `failures` is a required array of human-readable strings and may be empty.
 Each entry explains one input ref the provider did not dereference and why,
 in input order. Entries are plain text; this contract names no code
-vocabulary for them. They are non-terminal: the provider may still return the
-rest of the offering.
+vocabulary for them. They are non-terminal: the provider may still return
+the rest of the dynamic context.
 
 The base response intentionally does not include general-purpose `issues`,
 `warnings`, or `degradations` arrays. A terminal provider failure should use
@@ -251,9 +252,9 @@ provider lifecycle and unique within a response; it does not have to be
 durable across sessions unless the provider advertises that behavior.
 
 `content` is required, must be non-empty, and is the provider-prepared text it
-wants the builder to consider. It may be exact source text, synthesized text,
+wants the renderer to consider. It may be exact source text, synthesized text,
 or text with provider-selected framing. The candidate does not expose separate
-normalized, raw, and rendered variants. The builder still decides whether to
+normalized, raw, and rendered variants. The renderer still decides whether to
 preserve, transform, or omit the content.
 
 `refs` point to dereferenceable files, URLs, memory records, artifacts,
@@ -263,15 +264,15 @@ They identify source material and never substitute for candidate content.
 The candidate shape intentionally does not include named priority, token
 budget, latency budget, phase, lifetime, or placement fields. List ordering is
 the provider's preference; ranking, budget, and final placement belong to the
-context builder.
+context renderer.
 
 `metadata` is an optional advisory map of string keys to plain string or
 structured JSON values. It is the per-implementation extension seam: a
 provider may attach hints it believes
-a builder could use — for example, a role convention the reference provider
-emits so builders can section rendered output. Metadata is non-normative. No
+a renderer could use — for example, a role convention the reference provider
+emits so renderers can section rendered output. Metadata is non-normative. No
 guarantee in this contract depends on the presence or value of any key, and a
-conforming builder may ignore metadata entirely. There is no closed key
+conforming renderer may ignore metadata entirely. There is no closed key
 vocabulary here; conventions the reference provider emits are documented in
 the service dossier. A key that earns cross-implementation meaning may be
 promoted to a named field in a later contract version.
@@ -319,7 +320,7 @@ boundary, it should omit the candidate or fail explicitly rather than
 bypassing the boundary.
 
 Source text may be adversarial. Candidate `refs` identify source material when
-that information is available, but the builder remains responsible for
+that information is available, but the renderer remains responsible for
 deciding how to treat and place candidate content.
 
 ## Failure Semantics
@@ -339,7 +340,7 @@ Expected failure categories:
 
 Failure should be explicit and degradable. A provider may return an empty
 candidate list when it has nothing useful. A provider may omit an unusable
-candidate without failing an otherwise useful offering.
+candidate without failing an otherwise useful response.
 
 Failure to dereference an individual input ref should normally be reported in
 `failures`. It does not require the terminal `context_provider.context_failed`
@@ -352,7 +353,7 @@ input ref.
 
 A provider must not fabricate context to hide retrieval failure.
 
-The runtime or context builder should be able to continue without a provider
+The runtime or context renderer should be able to continue without a provider
 unless that provider was configured as required.
 
 ## Conversation Record Access
@@ -376,27 +377,27 @@ Merely receiving a `session_id` does not grant session record access.
 Skills are part of the context vocabulary. A dynamic skills candidate may
 carry a loaded skill body, a selected reference, or skill guidance needed for
 the current message, in the candidate list. Stable skill indexes are
-runtime-loaded configuration passed to the builder directly, not provider
+runtime-loaded configuration passed to the renderer directly, not provider
 output.
 
-## Builder Interaction
+## Renderer Interaction
 
-Provider events say what dynamic context was available. Builder events say
-what the model actually saw. The builder owns delivery, retention, and
+Provider events say what dynamic context was available. Renderer events say
+what the model actually saw. The renderer owns delivery, retention, and
 omission; the provider must not depend on every returned candidate being
 included in the final model input.
 
-A provider's offering granularity and a builder's delivery policy are a
-pairing choice, not a contract coupling. Providers and builders are composed
+A provider's response granularity and a renderer's delivery policy are a
+pairing choice, not a contract coupling. Providers and renderers are composed
 by the runtime and evaluated as pairs; a provider that assumes persistence
-across calls pairs only with a builder that provides it.
+across calls pairs only with a renderer that provides it.
 
 ## Concurrency And Idempotency
 
 `context_provider.get_context` is read-style and should be safe to retry.
 
 The request `id` is an identity and correlation value, not a durable write
-idempotency key. `ContextOffering.request_id` and
+idempotency key. `DynamicContext.request_id` and
 `ContextFailure.request_id` refer back to it. Repeated equivalent requests
 may produce different candidates if underlying sources changed. The contract
 does not require candidates to explain why their content differs between
@@ -407,10 +408,10 @@ corrupt provider state or return internally inconsistent candidate payloads.
 
 ## Extension Surface
 
-This contract is the floor. A generic builder relies only on the fields named
+This contract is the floor. A generic renderer relies only on the fields named
 here. A richer provider may advertise additional actions, additional
 candidate fields, candidate-level hints in `metadata`, or negotiated shapes
-with a compatible builder; those ride on top of this surface and must not
+with a compatible renderer; those ride on top of this surface and must not
 change the meaning of the floor fields. A later version may add a
 contribution seam for plugins; nothing here precludes it.
 
@@ -422,8 +423,8 @@ contribution seam for plugins; nothing here precludes it.
 - Whether `TouchedPath` relocates to the tool invocation contract or a shared
   types document, since tool invocation is its producer.
 - Whether emitted snapshots should become durable transcript records. This
-  question follows the reference builder's delivery policy and has relocated
-  to the context-builder dossier.
+  question follows the reference renderer's delivery policy and has relocated
+  to the context-renderer dossier.
 
 ## Minimal Test Fixtures
 
@@ -440,9 +441,9 @@ with:
   without requiring raw text parsing
 - account for every explicit input ref through a candidate's `refs` or an
   entry in `failures`, in input order
-- return an otherwise successful offering when one input ref cannot be
+- return an otherwise successful dynamic context when one input ref cannot be
   dereferenced
-- preserve `ContextRequest.id` as `ContextOffering.request_id` and in the
+- preserve `ContextRequest.id` as `DynamicContext.request_id` and in the
   failure payload
 - require non-empty `content` on every candidate and treat candidate `refs`
   only as source links
