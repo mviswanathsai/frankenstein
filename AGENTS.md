@@ -102,8 +102,9 @@ pillars are real.
 
 ### Where The Project Is Now
 
-Pillar 1 is the current center of gravity. A Hermes census exists and three
-contracts are drafted: session, context provider, tool invocation. Pillar 2's
+Pillar 1 is the current center of gravity. A Hermes census exists and five
+contracts are drafted: session, context provider, tool invocation, model
+invocation, context renderer. Pillar 2's
 commitments are stated above; the event model is not yet its own contract.
 Pillar 3 is open. The status of every track, and the next steps, live in
 `docs/project-status.md`.
@@ -253,11 +254,15 @@ after any implementation that touches contract surfaces.
   contract version, a next step, or a capability area moving into active work.
 - Hermes census: pending — analysis done, file never committed.
 - Contracts: `docs/session-capability-contract.md` (`session.v0.3`),
-  `docs/context-provider-capability-contract.md` (`context_provider.v0.1`),
-  `docs/tool-invocation-capability-contract.md` (`tool_invocation.v0`)
+  `docs/context-provider-capability-contract.md` (`context_provider.v0.2`),
+  `docs/tool-invocation-capability-contract.md` (`tool_invocation.v0`),
+  `docs/model-invocation-capability-contract.md` (`model_invocation.v0`),
+  `docs/context-renderer-capability-contract.md` (`context_renderer.v0.3`)
 - Service dossiers: `docs/session-service-dossier.md`,
   `docs/context-provider-service-dossier.md`,
-  `docs/tool-invocation-service-dossier.md`
+  `docs/tool-invocation-service-dossier.md`,
+  `docs/model-invocation-service-dossier.md`,
+  `docs/context-renderer-service-dossier.md`
 - Reference implementations: Hermes at `/home/mviswanathsai/hermes-agent`, Pi
   at `/home/mviswanathsai/pi`, Darwin Gödel Machine at
   `/home/mviswanathsai/dgm` (see `learning-records/0002-dgm-lessons.md`). The

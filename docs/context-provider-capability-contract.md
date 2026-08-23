@@ -16,13 +16,18 @@ Design rationale and Hermes evidence live in
 surface.
 
 `context_provider.v0.2` replaces the two-action, layered shape of v0.1 with
-one action and one flat `DynamicContext` response. The `initialize` action is
-gone; the `retained`/`per_call` lifetime split and the `referenced` channel
-are gone. Stable context — agent identity, configured instructions, skill
-indexes, tool guidance — is runtime-loaded configuration that flows directly
-to the context renderer. The provider owns only dynamic context: material
-that must be found during a session. Placement and retention are renderer
-decisions, not provider labels.
+two read-style actions and one shared flat `ContextResponse` shape. The
+`initialize` action is gone; the `retained`/`per_call` lifetime split and the
+`referenced` channel are gone.
+
+- `context_provider.get_dynamic_context` — what must be found during the
+  session, called per turn
+- `context_provider.get_stable_context` — runtime-loaded stable material
+  (agent identity, configured instructions, skill indexes, tool guidance),
+  called once per session; the runtime freezes the result into the context
+  renderer's `config`
+
+Placement and retention are renderer decisions, not provider labels.
 
 ## Purpose
 
@@ -58,8 +63,9 @@ A context provider may own implementation-private state such as:
 - source freshness metadata
 - tool schemas if it also advertises model-facing tools
 
-The base context-provider action is observational from the harness point of
-view. Calling `context_provider.get_context` must not silently commit durable
+The base context-provider actions are observational from the harness point of
+view. Calling `context_provider.get_dynamic_context` or
+`context_provider.get_stable_context` must not silently commit durable
 semantic state such as new memories, profile facts, session records, or
 workspace changes.
 
@@ -67,10 +73,11 @@ If a service wants durable writes, model-facing tools, memory observation,
 forget/redact operations, or index rebuild commands, those are separate
 advertised surfaces.
 
-## The Dynamic Context
+## The Context Response
 
-A response carries the candidates the provider currently wants considered,
-with honest accounting of the evidence it was given. This contract takes no
+Both actions return the same flat `ContextResponse` shape. A response carries
+the candidates the provider currently wants considered, with honest accounting
+of the evidence it was given. This contract takes no
 position on response granularity: a response may be the provider's complete
 current view, a delta against an earlier response, or only current-turn
 relevance. That choice is provider policy.
@@ -86,13 +93,13 @@ a current-only renderer. Neither direction is legislated here.
 The provider does not label candidates by lifetime or placement. There is no
 contract-level notion of retained, per-call, or mid-session context.
 
-## Required Action
+## Required Actions
 
-### `context_provider.get_context`
+### `context_provider.get_dynamic_context`
 
 Return dynamic context candidates for the current request.
 
-There is one action, called per turn and whenever the kernel needs fresh
+Called per turn and whenever the kernel needs fresh
 dynamic context, for example after tool execution. The first call of a
 session is not a distinct action; a caller that wants to signal session start
 may pass `reason: "session_start"` as evidence.
@@ -188,20 +195,60 @@ Terminal events:
 - `context_provider.context_provided`
 - `context_provider.context_failed`
 
-## Response Payload
+### `context_provider.get_stable_context`
 
-Successful output payload:
+Return the session's stable material: agent identity, configured
+instructions, skill indexes, and tool guidance. Called once per session by the
+runtime; the runtime freezes the result into the context renderer's `config`
+and does not re-call it per turn.
+
+Input is a subset of `ContextRequest`:
 
 ```text
-DynamicContext {
+StableContextRequest {
+  id
+  session_id?
+  runtime?: RuntimeFacts
+  workspace_roots: WorkspaceRoot[]
+}
+```
+
+`id` is required and identifies this request. The response refers to it as
+`request_id`. `runtime` and `workspace_roots` follow the same semantics as on
+`get_dynamic_context`; `transcript`, `refs`, `touched_paths`, and `reason` are
+not part of this action.
+
+The provider discovers stable material the same way it discovers anything
+else — convention files such as AGENTS.md, CLAUDE.md, CURSOR.md, and SOUL.md
+within the granted boundary, plus configured identity and guidance — and
+classifies it into named sections. The section name rides in the candidate's
+`metadata` (`slot` convention: `identity`, `instructions`, `skills`,
+`tool_guidance`); how the renderer or runtime keys on that convention is an
+implementation choice. Content is the section text.
+
+The response uses the same `ContextResponse` shape as
+`get_dynamic_context`. Candidates are ordered; the response is frozen by the
+caller and does not vary per turn. Stable material never arrives as dynamic
+candidates on `get_dynamic_context`, and it never renders as dynamic context.
+
+Terminal events:
+
+- `context_provider.context_provided`
+- `context_provider.context_failed`
+
+## Response Payload
+
+Successful output payload (shared by both actions):
+
+```text
+ContextResponse {
   request_id
   candidates: ContextCandidate[]
   failures: string[]
 }
 ```
 
-`request_id` references the `id` of the request that produced this dynamic
-context.
+`request_id` references the `id` of the request that produced this response.
 
 `candidates` is a required ordered list and may be empty. Ordering
 communicates the provider's relative preference across the whole list.
@@ -285,7 +332,7 @@ return a candidate whose refs substitute for content.
 
 ## Side Effects
 
-`context_provider.get_context` may:
+`context_provider.get_dynamic_context` may:
 
 - read allowed sources
 - query memory/search backends
@@ -377,8 +424,8 @@ Merely receiving a `session_id` does not grant session record access.
 Skills are part of the context vocabulary. A dynamic skills candidate may
 carry a loaded skill body, a selected reference, or skill guidance needed for
 the current message, in the candidate list. Stable skill indexes are
-runtime-loaded configuration passed to the renderer directly, not provider
-output.
+delivered once per session through `get_stable_context` and passed to the
+renderer inside `config`, not as dynamic candidates.
 
 ## Renderer Interaction
 
@@ -394,10 +441,10 @@ across calls pairs only with a renderer that provides it.
 
 ## Concurrency And Idempotency
 
-`context_provider.get_context` is read-style and should be safe to retry.
+Both context actions are read-style and should be safe to retry.
 
 The request `id` is an identity and correlation value, not a durable write
-idempotency key. `DynamicContext.request_id` and
+idempotency key. `ContextResponse.request_id` and
 `ContextFailure.request_id` refer back to it. Repeated equivalent requests
 may produce different candidates if underlying sources changed. The contract
 does not require candidates to explain why their content differs between
@@ -443,17 +490,19 @@ with:
   entry in `failures`, in input order
 - return an otherwise successful dynamic context when one input ref cannot be
   dereferenced
-- preserve `ContextRequest.id` as `DynamicContext.request_id` and in the
+- preserve `ContextRequest.id` as `ContextResponse.request_id` and in the
   failure payload
+- return stable material sections on `get_stable_context` with slot
+  conventions in candidate `metadata`
 - require non-empty `content` on every candidate and treat candidate `refs`
   only as source links
 - accept optional candidate `metadata` with no floor behavior depending on
   any key
 - keep candidate ids stable across responses within a provider lifecycle and
   unique within a single response
-- accept an optional `session_id`
-- accept unknown `reason` values and treat them as retrieval evidence, not
-  lifecycle commands
+- accept an optional `session_id` on both actions
+- accept unknown `reason` values on `get_dynamic_context` and treat them as
+  retrieval evidence, not lifecycle commands
 - accept optional `runtime.cwd`
 - require `workspace_roots` and accept an empty list as no filesystem access
 - resolve relative paths from `runtime.cwd` without treating cwd as permission
@@ -464,4 +513,5 @@ with:
 - accept optional `touched_paths` as request-time evidence without requiring
   session persistence
 - avoid returning known stale source content as usable context
-- avoid committing durable memory or session writes during `get_context`
+- avoid committing durable memory or session writes during either context
+  action

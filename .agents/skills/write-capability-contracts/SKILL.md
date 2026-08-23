@@ -64,6 +64,16 @@ without defining what they mean, why the receiver needs them, and which
 capability owns their semantics. Do not encode provider-native formatting in a
 provider-neutral session type.
 
+A discriminator needed only by one pairing (not by the contract) may ride in an
+advisory metadata convention, documented in the dossier, with no contract
+guarantee depending on it. Naming or templating on such a convention is an
+implementation choice, never a floor promise.
+
+When two actions return the same shape, do not create a second near-identical
+type for semantic flavor. Prefer one shared type; if its name misleads for one
+use, rename it neutral and let the consuming field names carry the semantic
+role.
+
 Do not add a generic provenance shape when existing shared references identify
 source material and parent-level identity identifies the producer. Add only the
 specific source, transformation, or freshness fact that a current consumer
@@ -198,6 +208,10 @@ Ask, in order:
 4. Is a new field required by observed behavior or only imagined flexibility?
 5. Does adding the field imply a lifecycle operation the contract must allow?
 6. Can derived or implementation-private data stay outside the contract?
+7. Does the contract name a producer for material the implementation lacks?
+   If the caller cannot honestly produce it, prefer a dedicated read action on
+   the owning capability's discovery machinery over duplicating discovery in
+   the caller. Record the pairing in the dossier.
 
 Prefer one focused clarification at a time when user intent is ambiguous.
 Listen for repeated assumptions in the user's wording and surface the most

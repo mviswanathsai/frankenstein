@@ -11,13 +11,13 @@ Renderer service. It is a capability contract, not an HTTP API, database
 schema, or implementation plan.
 
 Design evidence and boundary reasoning live in
-`docs/context-builder-service-dossier.md` (file rename pending). Research
+`docs/context-renderer-service-dossier.md`. Research
 into existing systems lives in `docs/research/context-builder-patterns.md`.
 
 `context_renderer.v0.3` is the rename and collapse of `context_builder.v0.2`:
 `estimate` and `assemble` are gone, and the capability is one action —
 `render`. The action derives the system prompt from a session-scoped `config`
-slot, normalizes the transcript, and renders the provider's `DynamicContext`
+slot, normalizes the transcript, and renders the provider's `ContextResponse`
 into the model input. Dynamic delivery never enters the system prompt; the
 prefix changes only on a deliberate reassembly via `config`, never by
 duration. Snapshot delivery mechanics (change gating, supersede text, cleared
@@ -50,7 +50,7 @@ It does not own:
 
 - the session transcript or its persistence. Those belong to Session.
 - dynamic context discovery, loading, or content. Those belong to Context
-  Provider, which supplies the complete current `DynamicContext` each call.
+  Provider, which supplies the complete current `ContextResponse` each call.
 - stable context production. Agent identity, configured instructions, skill
   indexes, and tool guidance are loaded by the runtime at startup and arrive
   inside `config`; the renderer consumes them, it does not discover them.
@@ -89,7 +89,7 @@ RenderRequest {
   id
   session_id?
   transcript: SessionRecord[]
-  dynamic_context: DynamicContext
+  dynamic_context: ContextResponse
   config
 }
 ```
@@ -107,7 +107,7 @@ errored turns, synthesizes missing tool results, and converts internal
 markers to model-readable text. Structured recording of these transforms is
 deferred to the event-model pass; it is not part of this contract's output.
 
-`dynamic_context` is required. It is the provider's current `DynamicContext`
+`dynamic_context` is required. It is the provider's current `ContextResponse`
 from `context_provider.v0.2` — `{request_id, candidates, failures}`. An
 empty candidate list is valid and renders to no dynamic messages. Candidate
 content is material, not binding text: the renderer may preserve, transform,
@@ -219,14 +219,14 @@ renderer is never re-invoked on replay.
 
 This contract reuses:
 
-- `DynamicContext`, `ContextCandidate`, `ContextFailure`, `ContextRef` from
+- `ContextResponse`, `ContextCandidate`, `ContextFailure`, `ContextRef` from
   `context_provider.v0.2`
 - `ToolCatalog`, `ToolDefinition` from `tool_invocation.v0`
 - `SessionRecord` from `session.v0.3`
 - `ModelInput`, `ModelMessage`, `ModelMessageRole` from
   `model_invocation.v0`
 
-It does not redefine them. Context Renderer consumes `DynamicContext` (on
+It does not redefine them. Context Renderer consumes `ContextResponse` (on
 `render`), consumes `SessionRecord`, produces `ModelInput`, and reads the
 tool catalog (inside `config`) for tool awareness text in the system prompt.
 

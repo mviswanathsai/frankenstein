@@ -1103,7 +1103,7 @@ mediator with explicit authority.
 After execution, the runtime may call:
 
 ```text
-context_provider.get_context(
+context_provider.get_dynamic_context(
   reason=tool_result,
   touched_paths=ToolResult.touched_paths
 )
