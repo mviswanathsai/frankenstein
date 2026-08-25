@@ -1,8 +1,8 @@
 # Context Renderer Capability Contract
 
-Date: 2026-08-23
+Date: 2026-08-25
 
-Contract version: `context_renderer.v0.3`.
+Contract version: `context_renderer.v0.4`.
 
 Status: draft.
 
@@ -23,6 +23,15 @@ prefix changes only on a deliberate reassembly via `config`, never by
 duration. Snapshot delivery mechanics (change gating, supersede text, cleared
 markers) are not contractual; they are renderer implementation policy.
 
+## Summary Of v0.4 Changes
+
+- Vocabulary aligned with `model_invocation.v0.1`: the produced IR is
+  `ModelInput { system?, turns: Turn[] }`, not `messages`. No behavior
+  change.
+- Reasoning evidence is typed `Evidence { kind, data }` and carried
+  through verbatim; the renderer never interprets, transforms, or drops
+  it.
+
 ## Purpose
 
 Context Renderer is the single point of contact for "what the model sees." It
@@ -32,8 +41,9 @@ the current dynamic context, and the session-scoped `config`.
 The service:
 
 - derives the system prompt and its content-derived identifier from `config`
-- normalizes the session transcript into model-facing messages
-- renders the dynamic context into model messages per its template policy
+- normalizes the session transcript into model-facing turns
+- renders the dynamic context into model-facing turns per its template
+  policy
 - produces a `ModelInput` ready for Model Invocation, with a
   `system_prompt_id` for observability
 
@@ -43,7 +53,7 @@ orchestration.
 
 ## Boundary
 
-Context Renderer owns what the model sees: system prompt derivation, message
+Context Renderer owns what the model sees: system prompt derivation, turn
 normalization, and dynamic-context delivery into the model input.
 
 It does not own:
@@ -102,18 +112,18 @@ receiving it grants no capability access.
 
 `transcript` is required and must be non-empty. It is the materialized
 session transcript from Session, trimmed by the caller to its budget. The
-renderer normalizes it into model-facing messages: drops scaffolding and
+renderer normalizes it into model-facing turns: drops scaffolding and
 errored turns, synthesizes missing tool results, and converts internal
 markers to model-readable text. Structured recording of these transforms is
 deferred to the event-model pass; it is not part of this contract's output.
 
 `dynamic_context` is required. It is the provider's current `ContextResponse`
 from `context_provider.v0.2` — `{request_id, candidates, failures}`. An
-empty candidate list is valid and renders to no dynamic messages. Candidate
+empty candidate list is valid and renders to no dynamic turns. Candidate
 content is material, not binding text: the renderer may preserve, transform,
 or omit it per its template policy, consistent with the provider contract's
 candidate handling. The renderer renders the candidates into the model
-messages; dynamic content never enters the system prompt.
+turns; dynamic content never enters the system prompt.
 
 `config` is required. It is the session-scoped material slot, carrying
 everything the renderer needs that is stable across turns: stable material
@@ -137,8 +147,17 @@ RenderResult {
 ```
 
 `input` is the rendered `ModelInput` ready for Model Invocation. `system` is
-the system prompt derived from `config`; `messages` is the normalized
-transcript plus the rendered dynamic-context messages.
+the system prompt derived from `config`; `turns` is the normalized
+transcript plus the rendered dynamic-context turns.
+
+Reasoning evidence attached to assistant turns is carried through
+verbatim. `Turn.reasoning` is typed `Evidence { kind, data }` per
+`model_invocation.v0.1`; the renderer never interprets it, transforms it,
+or drops it silently — intermediate layers preserve evidence untouched,
+and the receiving adapter decides what reaches the wire. Where the session
+transcript does not yet carry evidence (session v0.3 has no explicit slot),
+the renderer simply produces turns without it; it never fabricates or
+reconstructs evidence.
 
 `system_prompt_id` is a content-derived identifier for `input.system`. The
 caller may include it in invocation events for observability. It is a
@@ -175,7 +194,7 @@ template; the harness treats the prompt as an opaque string with a stable ID.
   `config` alone. They do not vary with `transcript`, `dynamic_context`,
   turn count, or elapsed time. Byte-stability is the corollary.
 - Dynamic delivery never enters the system prompt. The `dynamic_context`
-  renders into the model messages; it never contributes to
+  renders into the model-facing turns; it never contributes to
   `ModelInput.system`. `render` is the sole producer of `ModelInput.system`.
 - Dynamic-context content is material, not binding text. The renderer may
   preserve, transform, or omit it per its template policy, consistent with
@@ -223,12 +242,15 @@ This contract reuses:
   `context_provider.v0.2`
 - `ToolCatalog`, `ToolDefinition` from `tool_invocation.v0`
 - `SessionRecord` from `session.v0.3`
-- `ModelInput`, `ModelMessage`, `ModelMessageRole` from
-  `model_invocation.v0`
+- `ModelInput`, `Turn`, `Role`, `Evidence` from
+  `model_invocation.v0.1`
 
 It does not redefine them. Context Renderer consumes `ContextResponse` (on
 `render`), consumes `SessionRecord`, produces `ModelInput`, and reads the
 tool catalog (inside `config`) for tool awareness text in the system prompt.
+Reasoning evidence on assistant turns is carried through verbatim; see
+Reasoning Evidence Ownership in the Model Invocation contract for the
+per-layer ownership rules.
 
 Stable material is produced by the runtime from the loaded agent
 configuration and arrives inside `config`; this contract names the slot, not

@@ -49,11 +49,12 @@ means.
   `labels`, and removes the partial-output field and the tool-calls/stop
   coupling invariant; Go implementation still v0-shaped and needs the
   update, including the kernel never setting `provider` on the request)
-- context renderer — `context_renderer.v0.3` —
+- context renderer — `context_renderer.v0.4` —
   `docs/context-renderer-capability-contract.md` (renamed and collapsed from
-  context builder; dossier at `docs/context-renderer-service-dossier.md`; Go
-  implementation still the v0 builder in `internal/contextbuilder/` and needs
-  the rework)
+  context builder; v0.4 aligns vocabulary with the turn-based IR of
+  `model_invocation.v0.1` and requires verbatim carry-through of reasoning
+  evidence; dossier at `docs/context-renderer-service-dossier.md`; Go
+  implementation is behind both revisions and needs the rework)
 
 Not yet drafted: runtime kernel, memory, compression, and the observability
 event model.

@@ -30,9 +30,9 @@ Context Renderer owns three things:
 - the system prompt, derived deterministically from `config` through a
   template, with a content-derived `system_prompt_id`
 - the normalized transcript, converted from internal session records to
-  model-facing messages
-- dynamic-context delivery: the provider's candidates rendered into the model
-  messages per the renderer's template policy — never into the system prompt
+  model-facing turns
+- dynamic-context delivery: the provider's candidates rendered into the model-
+  facing turns per the renderer's template policy — never into the system prompt
 
 It does not own:
 
@@ -87,8 +87,8 @@ The capability:
 
 - `render`: derives the system prompt and its content-derived
   `system_prompt_id` from `config`, normalizes the transcript into
-  model-facing messages, renders the dynamic context candidates into the
-  model messages per its template policy, and returns a `ModelInput` ready
+  model-facing turns, renders the dynamic context candidates into the
+  model-facing turns per its template policy, and returns a `ModelInput` ready
   for Model Invocation
 
 The kernel builds `config` once per session and holds it; every `render` call
@@ -118,7 +118,8 @@ Pi produces `Context { systemPrompt?, messages: Message[] }` and passes it to
 the model adapter. Hermes produces an `api_messages` list with the system
 message first. In both cases, tool schemas travel separately as a top-level
 `tools` argument on the model request. Frankenstein's
-`ModelInput { system?, messages: ModelMessage[] }` matches this shape exactly.
+`ModelInput { system?, turns: Turn[] }` matches this shape (as of
+`model_invocation.v0.1`; the v0 shape used `messages`).
 
 ### System prompt byte-stability is the supreme invariant
 
@@ -156,7 +157,8 @@ capability, not part of the renderer's contract.
 ### Session (`session.v0.3`)
 
 Context Renderer **consumes** `SessionRecord[]` as the `transcript` input to
-`render`. It normalizes these internal records into `ModelMessage[]`. It does
+`render`. It normalizes these internal records into `Turn[]`. Reasoning evidence on
+assistant records is carried through verbatim as opaque `Evidence`. It does
 not read, write, or mutate session state. The kernel materializes the
 transcript from Session and hands it to the renderer.
 
@@ -198,16 +200,16 @@ never model-facing text. The renderer's prompt never changes mid-session.
 Catalog ordering is Tool Invocation's concern. The renderer preserves the
 order it receives for the tool awareness block.
 
-### Model Invocation (`model_invocation.v0`)
+### Model Invocation (`model_invocation.v0.1`)
 
-Context Renderer **produces** `ModelInput { system?, messages }` — the shape
+Context Renderer **produces** `ModelInput { system?, turns }` — the shape
 defined in the model invocation contract. The kernel delivers this directly
 as the input to `model_invocation.invoke`. The renderer does not call Model
 Invocation.
 
 `ModelInput.system` is the system prompt derived from `config`.
-`ModelInput.messages` is the normalized transcript plus the rendered
-dynamic-context messages. `ToolCatalog` travels separately on the invoke
+`ModelInput.turns` is the normalized transcript plus the rendered
+dynamic-context turns. `ToolCatalog` travels separately on the invoke
 request.
 
 ## State Owned Or Mutated
@@ -285,8 +287,8 @@ degenerate — see Open Questions.
   reused from `context_provider.v0.2`
 - `ToolCatalog`, `ToolDefinition` are reused from `tool_invocation.v0`
 - `SessionRecord` is reused from `session.v0.3`
-- `ModelInput`, `ModelMessage`, `ModelMessageRole` are reused from
-  `model_invocation.v0`
+- `ModelInput`, `Turn`, `Role`, `Evidence` are reused from
+  `model_invocation.v0.1`
 
 ## External Effects
 
