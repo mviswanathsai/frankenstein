@@ -39,9 +39,16 @@ means.
   needs the v0.2 update)
 - tool invocation — `tool_invocation.v0` —
   `docs/tool-invocation-capability-contract.md`
-- model invocation — `model_invocation.v0` —
+- model invocation — `model_invocation.v0.1` —
   `docs/model-invocation-capability-contract.md` (dossier at
-  `docs/model-invocation-service-dossier.md`)
+  `docs/model-invocation-service-dossier.md`, revised alongside; v0.1
+  reshapes the success payload into the assistant turn, types reasoning
+  as opaque `Evidence` with adapter-owned wire policy, adds a
+  transport-grade streaming observation channel, replaces the stop enum
+  with a typed `outcome` plus verbatim `finish_reason` and advisory
+  `labels`, and removes the partial-output field and the tool-calls/stop
+  coupling invariant; Go implementation still v0-shaped and needs the
+  update, including the kernel never setting `provider` on the request)
 - context renderer — `context_renderer.v0.3` —
   `docs/context-renderer-capability-contract.md` (renamed and collapsed from
   context builder; dossier at `docs/context-renderer-service-dossier.md`; Go
@@ -134,8 +141,9 @@ The service slots pillar 1 formalizes. Candidate areas, not final contracts.
   capture, capability scoping.
 - Model invocation — provider normalization: streaming, tool-call formats,
   reasoning metadata, provider replay fields, rate limits, content filters,
-  fallback compatibility. Now in active contract work as `model_invocation.v0`
-  with its service dossier.
+  fallback compatibility. Contract drafted as `model_invocation.v0`, revised
+  to `model_invocation.v0.1` after the runtime-kernel reality check; Go
+  implementation still v0-shaped and needs the v0.1 update.
 - Compression — a state transform with provenance, not a summarizer. It affects
   replay, tool-call invariants, memory provenance, prompt cache stability, and
   user trust.
