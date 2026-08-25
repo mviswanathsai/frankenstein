@@ -58,9 +58,6 @@ func (s *Service) Render(req RenderRequest) (RenderResult, error) {
 	if len(req.Transcript) == 0 {
 		return RenderResult{}, invalidRequest(req.ID, "transcript must not be empty")
 	}
-	if req.DynamicContext == nil {
-		return RenderResult{}, invalidRequest(req.ID, "dynamic_context is required")
-	}
 	if req.Config == nil {
 		return RenderResult{}, invalidRequest(req.ID, "config is required")
 	}
